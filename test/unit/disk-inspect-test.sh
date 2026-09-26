@@ -164,6 +164,17 @@ check_contains "zram without hibernation says so" "with zram swap, and no hibern
 check_contains "no swap says so" "with no swap" \
   "$(DISK_INSPECT_SWAP_STRATEGY=none render_wipe_summary /dev/nvme1n1 full_disk true 80)"
 
+both=$(DISK_INSPECT_OTHER_ERASED=/dev/vda render_wipe_summary /dev/nvme1n1 full_disk true 80)
+check_contains "with a /home disk, root has no @home" "/  (@, @log, @pkg)" "$both"
+check_contains "and says where /home goes" "/home goes on /dev/vda" "$both"
+check_absent "the /home disk isn't listed as untouched" "   /dev/vda " "$both"
+home=$(DISK_INSPECT_OTHER_ERASED=/dev/nvme1n1 render_wipe_summary /dev/vda home_disk true 80)
+check_contains "the /home disk has its own headline" "THIS WILL ALSO ERASE A DISK, FOR /home" "$home"
+check_contains "and creates only /home" "LUKS2 → btrfs   /home  (@home)" "$home"
+check_contains "still one passphrase" "still one passphrase" "$home"
+check_absent "the root disk isn't listed as untouched" "   /dev/nvme1n1 " "$home"
+check_width "the /home summary fits 80 columns" 80 "$home"
+
 plain=$(render_wipe_summary /dev/nvme1n1 full_disk false 80)
 check_absent "unencrypted root has no LUKS" "LUKS2 →" "$plain"
 check_contains "unencrypted root is btrfs" "btrfs           /  (@, @home, @log, @pkg)" "$plain"

@@ -340,6 +340,18 @@ class CompileTest(unittest.TestCase):
         self.assertNotIn("encryption_password", configuration["disk_config"]["disk_encryption"])
         self.assertEqual(compile_archinstall.credentials(config, self.secrets), {"users": []})
 
+    def test_a_home_disk_takes_home_off_the_root_disk(self):
+        data = minimal(disk={"target": {"serial": "A"}, "home": {"location": "disk", "disk": {"serial": "B"}}})
+        config, issues = parse(data)
+        self.assertEqual(errors(issues), [])
+        configuration = compile_archinstall.full_disk_configuration(
+            config, "/dev/vda", 40 * 2**30, self.secrets, "linux-omarchy", "omarchy-dev", "omarchy-settings-dev", "/dev/vdb"
+        )
+        root = configuration["disk_config"]["device_modifications"][0]["partitions"][1]
+        self.assertEqual([s["name"] for s in root["btrfs"]], ["@", "@log", "@pkg"])
+        self.assertEqual(configuration["omarchy_install"]["home"], {"device": "/dev/vdb", "encrypt": True})
+        self.assertNotIn("home", self.compile()["omarchy_install"])
+
     def test_the_swap_strategy_reaches_the_orchestrator(self):
         self.assertEqual(self.compile()["omarchy_install"]["swap"], {"strategy": "zram+hibernate"})
         config, _ = parse(minimal(swap={"strategy": "none"}))
@@ -454,14 +466,16 @@ class PlanTest(unittest.TestCase):
     def make(self, data, unattended=True, signatures=True, fingerprint="sha256:" + "0" * 64, medium="/dev/sdz"):
         config, issues = parse(data)
         self.assertEqual(errors(issues), [])
-        devices = [{"path": "/dev/sda", "type": "disk", "size": 42949672960, "serial": "S69ENX0T812345"}]
+        devices = [{"path": "/dev/sda", "type": "disk", "size": 42949672960, "serial": "S69ENX0T812345"},
+                   {"path": "/dev/sdb", "type": "disk", "size": 42949672960, "serial": "HOME"}]
+        signatures = signatures if callable(signatures) else (lambda disk, value=signatures: value)
         with mock.patch.object(plan.resolve, "inventory", return_value=devices), \
              mock.patch.object(plan.helpers, "install_medium", return_value=medium), \
              mock.patch.object(plan.helpers, "is_cidata", return_value=False), \
-             mock.patch.object(plan.helpers, "installable_disks", return_value=["/dev/sda"]), \
+             mock.patch.object(plan.helpers, "installable_disks", return_value=["/dev/sda", "/dev/sdb"]), \
              mock.patch.object(plan.helpers, "min_full_disk_bytes", return_value=32 * 2**30), \
-             mock.patch.object(plan.helpers, "has_signatures", return_value=signatures), \
-             mock.patch.object(plan.helpers, "wipe_summary", return_value="THIS WILL ERASE A DISK\n"), \
+             mock.patch.object(plan.helpers, "has_signatures", side_effect=signatures), \
+             mock.patch.object(plan.helpers, "wipe_summary", side_effect=lambda disk, *a, **k: f"summary of {disk} {k.get('mode', 'full_disk')}\n"), \
              mock.patch.object(plan.helpers, "busy_partitions", return_value=[]), \
              mock.patch.object(plan, "fingerprint", return_value=fingerprint), \
              mock.patch.object(plan, "_is_virtual_machine", return_value=True):
@@ -485,6 +499,22 @@ class PlanTest(unittest.TestCase):
 
     def test_interactive_installs_ask_instead(self):
         self.assertTrue(self.make(self.unattended_config(), unattended=False).ok)
+
+    def test_a_home_disk_gets_its_own_summary_and_guard(self):
+        data = self.unattended_config(on_existing_data="wipe")
+        data["disk"]["home"] = {"location": "disk", "disk": {"serial": "HOME"}}
+        result = self.make(data)
+        self.assertTrue(result.ok, [str(i) for i in result.issues])
+        self.assertEqual(result.home.path, "/dev/sdb")
+        self.assertEqual(result.home.summary, "summary of /dev/sdb home_disk\n")
+
+        data["disk"]["on_existing_data"] = "abort"
+        result = self.make(data, signatures=lambda disk: disk == "/dev/sdb")
+        self.assertIn("(the /home disk) has data on it", str(result.errors[0]))
+
+        data["disk"]["home"]["disk"] = {"serial": "S69ENX0T812345"}
+        parsed, issues = parse(data)
+        self.assertTrue(any("different disk" in e for e in errors(issues)))
 
     def test_every_swap_strategy_can_install(self):
         for strategy in ("zram+hibernate", "zram", "none"):

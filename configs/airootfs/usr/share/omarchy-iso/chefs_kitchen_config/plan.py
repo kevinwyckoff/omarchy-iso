@@ -40,6 +40,7 @@ class Plan:
     config: InstallConfig
     unattended: bool
     target: DiskPlan | None = None
+    home: DiskPlan | None = None
     issues: list[Issue] = field(default_factory=list)
 
     @property
@@ -111,6 +112,38 @@ def _check_keyboard(plan: Plan, config: InstallConfig) -> None:
         ))
 
 
+def _check_disk(
+    plan: Plan, key: str, selector, devices: list[dict], medium: str, minimum: int, minimum_note: str = ""
+) -> str | None:
+    """Resolve a selector to one installable disk, or record why not."""
+    def refuse(message: str) -> None:
+        plan.issues.append(Issue(key, message))
+
+    found = resolve.resolve(selector, devices)
+    if found.error:
+        refuse(found.error)
+        return None
+    disk = found.disk
+    if disk == medium:
+        refuse(f"{disk} is the install medium this ISO booted from")
+        return None
+    if helpers.is_cidata(disk):
+        refuse(f"{disk} is a cidata drive")
+        return None
+    if disk not in helpers.installable_disks(medium):
+        refuse(f"{disk} isn't a disk Omarchy can be installed on")
+        return None
+    size = int(resolve.device(devices, disk).get("size") or 0)
+    if size < minimum:
+        refuse(f"{disk} is {size // 2**30} GiB; Omarchy needs at least {minimum // 2**30} GiB{minimum_note}")
+    if selector.kind == "path" and not _is_virtual_machine():
+        plan.issues.append(Issue(key, "{ path = ... } can name a different disk after a reboot or re-cabling; on real hardware prefer serial, by_id or wwn", "warning"))
+    for line in helpers.busy_partitions(disk):
+        part, _, where = line.partition("\t")
+        refuse(f"{part} is in use ({where}); unmount it or turn its swap off first")
+    return disk
+
+
 def make_plan(config: InstallConfig, unattended: bool, width: int = 100) -> Plan:
     plan = Plan(config, unattended)
 
@@ -119,8 +152,6 @@ def make_plan(config: InstallConfig, unattended: bool, width: int = 100) -> Plan
 
     if config.mode == "free-space":
         refuse("disk.mode", f'"free-space" {_NOT_YET}')
-    if config.home_location == "disk":
-        refuse("disk.home.location", f'"disk" {_NOT_YET}')
     if config.theme:
         refuse("desktop.theme", _NOT_YET)
     if config.agent:
@@ -137,35 +168,33 @@ def make_plan(config: InstallConfig, unattended: bool, width: int = 100) -> Plan
         return plan
 
     devices = resolve.inventory()
-    found = resolve.resolve(config.target, devices)
-    if found.error:
-        refuse("disk.target", found.error)
-        return plan
-    disk = found.disk
-
     medium = helpers.install_medium()
-    if disk == medium:
-        refuse("disk.target", f"{disk} is the install medium this ISO booted from")
-        return plan
-    if helpers.is_cidata(disk):
-        refuse("disk.target", f"{disk} is a cidata drive")
-        return plan
-    if disk not in helpers.installable_disks(medium):
-        refuse("disk.target", f"{disk} isn't a disk Omarchy can be installed on")
-        return plan
-
-    size = int(resolve.device(devices, disk).get("size") or 0)
     minimum = helpers.min_full_disk_bytes()
-    if size < minimum:
-        refuse("disk.target", f"{disk} is {size // 2**30} GiB; Omarchy needs at least {minimum // 2**30} GiB, "
-                              "its own 2 GiB ESP included")
 
-    if config.target.kind == "path" and not _is_virtual_machine():
-        plan.issues.append(Issue("disk.target", f"{{ path = ... }} can name a different disk after a reboot or re-cabling; on real hardware prefer serial, by_id or wwn", "warning"))
+    disk = _check_disk(plan, "disk.target", config.target, devices, medium, minimum, ", its own 2 GiB ESP included")
+    home_disk = None
+    if config.home_location == "disk" and config.home_disk:
+        # /home needs no ESP, but anything smaller than the root minimum is no
+        # home for a desktop's worth of files either.
+        home_disk = _check_disk(plan, "disk.home.disk", config.home_disk, devices, medium, 8 * 2**30)
+        if home_disk and home_disk == disk:
+            refuse("disk.home.disk", f"names the same disk as disk.target ({disk})")
+            home_disk = None
+    if disk is None:
+        return plan
 
     target = DiskPlan(disk, fingerprint(disk, devices), helpers.has_signatures(disk))
-    target.summary = helpers.wipe_summary(disk, config.encryption_enabled, width, medium, config.swap_strategy)
+    target.summary = helpers.wipe_summary(
+        disk, config.encryption_enabled, width, medium, config.swap_strategy, other_erased=home_disk or ""
+    )
     plan.target = target
+
+    if home_disk:
+        plan.home = DiskPlan(home_disk, fingerprint(home_disk, devices), helpers.has_signatures(home_disk))
+        plan.home.summary = helpers.wipe_summary(
+            home_disk, config.encryption_enabled, width, medium, config.swap_strategy,
+            other_erased=disk, mode="home_disk",
+        )
 
     if config.expect_fingerprint and config.expect_fingerprint != target.fingerprint:
         refuse(
@@ -179,9 +208,10 @@ def make_plan(config: InstallConfig, unattended: bool, width: int = 100) -> Plan
             f'on_existing_data = "wipe", and expect_fingerprint = "{target.fingerprint}" '
             "so only this exact layout gets erased",
         )
-
-    for line in helpers.busy_partitions(disk):
-        part, _, where = line.partition("\t")
-        refuse("disk.target", f"{part} is in use ({where}); unmount it or turn its swap off first")
-
+    if unattended and plan.home and plan.home.has_signatures and config.on_existing_data == "abort":
+        refuse(
+            "disk.on_existing_data",
+            f'{home_disk} (the /home disk) has data on it and on_existing_data = "abort". '
+            'To erase it anyway, set on_existing_data = "wipe"',
+        )
     return plan

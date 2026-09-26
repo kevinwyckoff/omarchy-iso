@@ -57,12 +57,15 @@ def busy_partitions(disk: str) -> list[str]:
     return [line for line in disk_inspect('disk_busy_partitions "$1"', disk).splitlines() if line]
 
 
-def wipe_summary(disk: str, encrypt: bool, width: int, medium: str, swap_strategy: str = "zram+hibernate") -> str:
+def wipe_summary(
+    disk: str, encrypt: bool, width: int, medium: str, swap_strategy: str = "zram+hibernate",
+    other_erased: str = "", mode: str = "full_disk",
+) -> str:
     return disk_inspect(
-        'disk_probe_all; render_wipe_summary "$1" full_disk "$2" "$3"',
-        disk, "true" if encrypt else "false", str(width),
+        'disk_probe_all; render_wipe_summary "$1" "$4" "$2" "$3"',
+        disk, "true" if encrypt else "false", str(width), mode,
         install_medium=medium,
-        env={"DISK_INSPECT_SWAP_STRATEGY": swap_strategy},
+        env={"DISK_INSPECT_SWAP_STRATEGY": swap_strategy, "DISK_INSPECT_OTHER_ERASED": other_erased},
     )
 
 

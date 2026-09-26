@@ -183,6 +183,10 @@ def prepare_live(ctx: InstallContext) -> None:
         if disk:
             info(f"› cleaning up holders on install disk: {disk}")
             subprocess.run(["omarchy-iso-cleanup-disk", disk], check=True)
+        home_disk = _home_disk_intent(ctx).get("device")
+        if home_disk:
+            info(f"› cleaning up holders on /home disk: {home_disk}")
+            subprocess.run(["omarchy-iso-cleanup-disk", home_disk], check=True)
 
     info("› loading configurator output")
     ctx.state["arch_config_handler"] = arch.load_arch_config(
@@ -234,6 +238,9 @@ def arch_install_system(ctx: InstallContext) -> None:
     with arch.open_installer(config, ctx.target, silent=True) as installer:
         if not pre_mounted:
             installer.mount_ordered_layout()
+            # Before anything is installed: users and genfstab must find /home
+            # already on its own disk.
+            _prepare_home_disk(ctx)
 
         installer.sanity_check(
             offline=True,
@@ -321,6 +328,110 @@ def arch_install_system(ctx: InstallContext) -> None:
             _write_pre_mounted_fstab(ctx)
         else:
             installer.genfstab()
+            _write_home_crypttab(ctx)
+
+
+# ── /home on its own disk ────────────────────────────────────────────────────
+# install.toml's [disk.home] location = "disk" moves the @home subvolume off the
+# root disk and onto a second one. When the install is encrypted that disk is
+# its own LUKS2 volume, opened at boot from /etc/crypttab with a random keyfile
+# kept on the encrypted root, so there is still one passphrase prompt. Snapshots
+# and factory reset keep covering / as before.
+
+HOME_MAPPER = "omarchy_home"
+
+
+def _home_disk_intent(ctx: InstallContext) -> dict:
+    return dict(ctx.omarchy_install.get("home") or {})
+
+
+def _partition_path(disk: str, number: int) -> str:
+    return f"{disk}p{number}" if re.search(r"(nvme|mmcblk|loop)", disk) else f"{disk}{number}"
+
+
+def _run(*args: str) -> None:
+    subprocess.run(list(args), check=True)
+
+
+def _prepare_home_disk(ctx: InstallContext) -> None:
+    home = _home_disk_intent(ctx)
+    device = home.get("device")
+    if not device:
+        return
+
+    info(f"› preparing /home on {device}")
+    _run("wipefs", "-af", device)
+    # "--" or parted reads the -1MiB end (1MiB short of the disk's end, room
+    # for the backup GPT) as options.
+    _run("parted", "-s", device, "--", "mklabel", "gpt", "mkpart", "omarchy_home", "btrfs", "1MiB", "-1MiB")
+    subprocess.run(["partprobe", device], check=False)
+    subprocess.run(["udevadm", "settle"], check=False)
+    part = _partition_path(device, 1)
+    for _ in range(20):
+        if Path(part).is_block_device():
+            break
+        time.sleep(0.5)
+    else:
+        raise RuntimeError(f"/home partition {part} never appeared")
+
+    filesystem = part
+    if home.get("encrypt"):
+        key = ctx.state_dir / f"{HOME_MAPPER}.key"
+        key.touch(mode=0o600)
+        key.write_bytes(os.urandom(64))
+        _run("cryptsetup", "luksFormat", "--type", "luks2", "--batch-mode", "--key-file", str(key), part)
+        _run("cryptsetup", "open", "--key-file", str(key), part, HOME_MAPPER)
+        ctx.state["home_luks_uuid"] = capture_identifier(["blkid", "-s", "UUID", "-o", "value", part], "/home LUKS UUID")
+        filesystem = f"/dev/mapper/{HOME_MAPPER}"
+
+    _run("mkfs.btrfs", "-f", "-L", "OMARCHY_HOME", filesystem)
+    top = ctx.state_dir / "home-top"
+    top.mkdir(exist_ok=True)
+    _run("mount", filesystem, str(top))
+    try:
+        _run("btrfs", "subvolume", "create", str(top / "@home"))
+    finally:
+        _run("umount", str(top))
+
+    target_home = ctx.target / "home"
+    target_home.mkdir(parents=True, exist_ok=True)
+    _run("mount", "-o", "noatime,compress=zstd,subvol=@home", filesystem, str(target_home))
+
+
+def _write_home_crypttab(ctx: InstallContext) -> None:
+    """After genfstab, which has already recorded /home by filesystem UUID."""
+    home = _home_disk_intent(ctx)
+    if not home.get("device") or not home.get("encrypt"):
+        return
+
+    keys = ctx.target / "etc" / "cryptsetup-keys.d"
+    keys.mkdir(mode=0o700, parents=True, exist_ok=True)
+    key = keys / f"{HOME_MAPPER}.key"
+    key.unlink(missing_ok=True)  # read-only once installed, so replace rather than overwrite
+    shutil.copyfile(ctx.state_dir / f"{HOME_MAPPER}.key", key)
+    key.chmod(0o400)
+
+    # "none": systemd-cryptsetup then loads /etc/cryptsetup-keys.d/<name>.key.
+    crypttab = ctx.target / "etc" / "crypttab"
+    existing = crypttab.read_text() if crypttab.exists() else ""
+    if HOME_MAPPER not in existing:
+        line = f"{HOME_MAPPER}  UUID={ctx.state['home_luks_uuid']}  none  luks,discard\n"
+        crypttab.write_text(existing + ("" if not existing or existing.endswith("\n") else "\n") + line)
+
+
+def _validate_home_disk(ctx: InstallContext) -> None:
+    home = _home_disk_intent(ctx)
+    if not home.get("device"):
+        return
+    fstab = (ctx.target / "etc" / "fstab").read_text()
+    if not re.search(r"^\S+\s+/home\s+btrfs\s", fstab, re.MULTILINE):
+        raise RuntimeError("/home on its own disk but /etc/fstab has no btrfs /home entry")
+    if home.get("encrypt"):
+        crypttab = ctx.target / "etc" / "crypttab"
+        if not crypttab.exists() or HOME_MAPPER not in crypttab.read_text():
+            raise RuntimeError(f"encrypted /home disk but /etc/crypttab has no {HOME_MAPPER} entry")
+        if not (ctx.target / "etc" / "cryptsetup-keys.d" / f"{HOME_MAPPER}.key").exists():
+            raise RuntimeError(f"encrypted /home disk but its key is missing from /etc/cryptsetup-keys.d")
 
 
 def _configure_limine_boot(ctx: InstallContext, installer, config) -> None:
@@ -1739,6 +1850,8 @@ def validate_boot(ctx: InstallContext) -> None:
 
     if ctx.is_protected:
         _validate_pre_mounted_filesystems(ctx)
+
+    _validate_home_disk(ctx)
 
     if ctx.defer_provisioning:
         _validate_provisioning_state(ctx)
