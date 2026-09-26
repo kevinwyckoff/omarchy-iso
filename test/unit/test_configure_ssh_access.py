@@ -2,7 +2,8 @@
 
 The phase touches the target only through the filesystem and arch-chroot, so
 the tests run it against a temp directory with subprocess.run recorded and the
-ufw side effect (writing user.rules) simulated by the fake.
+ufw side effect (writing user.rules) simulated by the fake, which also fails
+the way the real one does in the chroot when ufw.conf says ENABLED=yes.
 """
 
 import stat
@@ -24,6 +25,8 @@ sys.modules["orchestrator.archinstall_adapter"] = types.ModuleType("orchestrator
 from orchestrator import phases_impl  # noqa: E402
 
 UFW_RULE = "-A ufw-user-input -p tcp --dport 22 -j ACCEPT\n"
+# What firewall.sh leaves behind: ufw set to start on first boot.
+UFW_CONF = "# /etc/ufw/ufw.conf\nENABLED=yes\nLOGLEVEL=low\n"
 
 
 class ConfigureSshAccessTest(unittest.TestCase):
@@ -34,25 +37,36 @@ class ConfigureSshAccessTest(unittest.TestCase):
         self.calls = []
 
         info_patch = mock.patch.object(phases_impl, "info")
-        info_patch.start()
+        self.info = info_patch.start()
         self.addCleanup(info_patch.stop)
 
         run_patch = mock.patch.object(phases_impl.subprocess, "run", side_effect=self.fake_run)
         run_patch.start()
         self.addCleanup(run_patch.stop)
 
+        self.ufw_conf = self.target / "etc" / "ufw" / "ufw.conf"
+        self.ufw_conf.parent.mkdir(parents=True)
+        self.ufw_conf.write_text(UFW_CONF)
+
         self.ufw_writes_rule = True
+        self.ufw_result = (0, "Rules updated\nRules updated (v6)\n", "")
+        self.ufw_raises = None
+        self.ufw_runs = []
 
     def fake_run(self, cmd, **kwargs):
         self.calls.append(cmd)
         if cmd[2] == "ufw":
+            self.ufw_runs.append((kwargs, self.ufw_conf.read_text()))
+            if self.ufw_raises:
+                raise self.ufw_raises
             if self.ufw_writes_rule:
-                rules = self.target / "etc" / "ufw" / "user.rules"
-                rules.parent.mkdir(parents=True, exist_ok=True)
-                rules.write_text(UFW_RULE)
-            # ufw cannot reach netfilter inside a chroot and exits non-zero
-            # even when it recorded the rule; the phase must not trust this.
-            return CompletedProcess(cmd, 1)
+                (self.target / "etc" / "ufw" / "user.rules").write_text(UFW_RULE)
+            # An enabled ufw pushes the rule into the running firewall, which
+            # from the chroot is the live installer's and has no ufw chains.
+            if "ENABLED=yes" in self.ufw_conf.read_text():
+                return CompletedProcess(cmd, 1, stdout="", stderr="ERROR: problem running\n")
+            returncode, stdout, stderr = self.ufw_result
+            return CompletedProcess(cmd, returncode, stdout=stdout, stderr=stderr)
         return CompletedProcess(cmd, 0)
 
     def ctx(self, authorized_keys=None):
@@ -110,15 +124,57 @@ class ConfigureSshAccessTest(unittest.TestCase):
             ["arch-chroot", str(self.target), "systemctl", "enable", "sshd.service"],
         ])
 
-    def test_allows_ssh_through_ufw_despite_chroot_exit_status(self):
+    def test_allows_ssh_through_ufw(self):
         self.configure(authorized_keys="ssh-ed25519 AAAA jeff@host\n")
         self.assertEqual(self.chrooted("ufw"), [
             ["arch-chroot", str(self.target), "ufw", "allow", "ssh"],
         ])
 
-    def test_fails_when_ufw_does_not_record_the_rule(self):
+    def test_ufw_runs_disabled_and_is_enabled_again_after(self):
+        self.configure(authorized_keys="ssh-ed25519 AAAA jeff@host\n")
+        [(_, conf_seen)] = self.ufw_runs
+        self.assertIn("ENABLED=no", conf_seen)
+        self.assertNotIn("ENABLED=yes", conf_seen)
+        self.assertEqual(self.ufw_conf.read_text(), UFW_CONF)
+
+    def test_ufw_is_enabled_again_when_the_ufw_call_is_interrupted(self):
+        # Ctrl+C on the install console, landing before ufw returns anything.
+        self.ufw_raises = KeyboardInterrupt()
+        with self.assertRaises(KeyboardInterrupt):
+            self.configure(authorized_keys="ssh-ed25519 AAAA jeff@host\n")
+        [(_, conf_seen)] = self.ufw_runs
+        self.assertIn("ENABLED=no", conf_seen)
+        self.assertEqual(self.ufw_conf.read_text(), UFW_CONF)
+
+    def test_ufw_output_stays_off_the_console_on_success(self):
+        self.configure(authorized_keys="ssh-ed25519 AAAA jeff@host\n")
+        [(kwargs, _)] = self.ufw_runs
+        # Not inherited: ufw's stdout and stderr would otherwise land on the
+        # installer's console and in its log.
+        self.assertTrue(kwargs.get("capture_output"))
+        logged = "".join(str(call) for call in self.info.call_args_list)
+        self.assertNotIn("Rules updated", logged)
+
+    def test_fails_when_ufw_is_not_on_the_target(self):
+        # ufw.conf ships in the ufw package, so a target without it has no ufw.
+        self.ufw_conf.unlink()
+        with self.assertRaisesRegex(RuntimeError, "ufw is not installed on the target"):
+            self.configure(authorized_keys="ssh-ed25519 AAAA jeff@host\n")
+        self.assertEqual(self.chrooted("ufw"), [])
+        self.assertFalse(self.ufw_conf.exists())
+
+    def test_fails_with_ufw_output_when_ufw_does_not_record_the_rule(self):
+        # ufw checks user.rules is writable before it writes anything.
         self.ufw_writes_rule = False
-        with self.assertRaisesRegex(RuntimeError, "allow rule for port 22"):
+        self.ufw_result = (1, "", "ERROR: '/etc/ufw/user.rules' is not writable\n")
+        with self.assertRaisesRegex(RuntimeError, "allow rule for port 22 .*user.rules' is not writable"):
+            self.configure(authorized_keys="ssh-ed25519 AAAA jeff@host\n")
+        self.assertEqual(self.ufw_conf.read_text(), UFW_CONF)
+
+    def test_fails_with_ufw_output_when_ufw_fails_after_recording_the_rule(self):
+        # user.rules alone is half the rule: user6.rules is written after it.
+        self.ufw_result = (1, "Rules updated\n", "ERROR: '/etc/ufw/user6.rules' is not writable\n")
+        with self.assertRaisesRegex(RuntimeError, "(?s)allow rule for port 22 .*user6.rules' is not writable"):
             self.configure(authorized_keys="ssh-ed25519 AAAA jeff@host\n")
 
     def test_empty_file_fails_the_phase(self):

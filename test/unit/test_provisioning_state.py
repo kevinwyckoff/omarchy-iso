@@ -318,6 +318,9 @@ class ConfigureSshAccessDeferProvisioningTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.target = Path(self.tmp.name) / "mnt"
         self.target.mkdir()
+        ufw_conf = self.target / "etc/ufw/ufw.conf"
+        ufw_conf.parent.mkdir(parents=True)
+        ufw_conf.write_text("ENABLED=yes\n")
 
         info_patch = mock.patch.object(phases_impl, "info")
         info_patch.start()

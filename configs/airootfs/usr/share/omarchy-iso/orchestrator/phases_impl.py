@@ -1506,19 +1506,8 @@ def configure_ssh_access(ctx: InstallContext) -> None:
     # Open port 22 in the target's ufw, which runs default-deny incoming, so an
     # enabled sshd is still unreachable -- connections time out rather than
     # being refused.
-    #
-    # ufw cannot reach netfilter from inside the chroot and exits non-zero
-    # saying so, but it writes the rule to user.rules first, and that file is
-    # what ufw.service loads on first boot. So the exit status is the wrong
-    # thing to check here; the rule landing in the file is the thing that
-    # matters.
     info("› allowing SSH through ufw")
-    subprocess.run(["arch-chroot", str(ctx.target), "ufw", "allow", "ssh"], check=False)
-
-    rules = ctx.target / "etc" / "ufw" / "user.rules"
-    text = rules.read_text() if rules.exists() else ""
-    if "--dport 22 -j ACCEPT" not in text:
-        raise RuntimeError(f"ufw did not record an allow rule for port 22 in {rules}")
+    _ufw_allow(ctx, ["ssh"], recorded="--dport 22 -j ACCEPT", what="port 22")
 
 
 def _authorized_keys(path: Path) -> list[str]:
@@ -1540,6 +1529,40 @@ def _authorized_keys(path: Path) -> list[str]:
         raise RuntimeError(f"{path} contains no SSH keys")
 
     return keys
+
+
+def _ufw_allow(ctx: InstallContext, rule: list[str], recorded: str, what: str) -> None:
+    """Add an allow rule to the target's ufw for ufw.service to load on first boot.
+
+    firewall.sh has already set ENABLED=yes, and an enabled ufw pushes each
+    new rule into the running firewall -- from the chroot, the live
+    installer's, which has no ufw chains. So ufw writes user.rules, fails the
+    push with "ERROR: problem running" on the install console, and exits
+    before it writes user6.rules, leaving IPv6 without the rule.
+
+    To avoid that, ufw.conf says ENABLED=no while ufw runs, as it did when
+    firewall.sh added its own rules, and gets its original text back
+    afterwards, even if the call is interrupted. A disabled ufw only writes
+    the rule files, for IPv4 and IPv6 both, and exits 0, so a non-zero exit
+    is a real failure.
+
+    ufw's output is captured and only shown when the rule did not land.
+    """
+    conf = ctx.target / "etc" / "ufw" / "ufw.conf"
+    if not conf.exists():
+        raise RuntimeError(f"ufw is not installed on the target: {conf} is missing")
+    conf_text = conf.read_text()
+    conf.write_text(re.sub(r"^ENABLED=.*$", "ENABLED=no", conf_text, flags=re.MULTILINE))
+    try:
+        proc = capture(["arch-chroot", str(ctx.target), "ufw", "allow", *rule])
+    finally:
+        conf.write_text(conf_text)
+
+    rules = ctx.target / "etc" / "ufw" / "user.rules"
+    text = rules.read_text() if rules.exists() else ""
+    if proc.returncode != 0 or recorded not in text:
+        detail = (proc.stdout + proc.stderr).strip() or f"ufw exited {proc.returncode}"
+        raise RuntimeError(f"ufw did not record an allow rule for {what} in {rules.parent}: {detail}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1609,20 +1632,10 @@ def configure_tailscale(ctx: InstallContext) -> None:
         check=True,
     )
 
-    # Same dance as configure_ssh_access: ufw cannot reach netfilter from the
-    # chroot and exits non-zero, but it records the rule in user.rules first,
-    # and that file is what ufw.service loads on first boot. Without the rule
+    # Let tailnet traffic through ufw's default-deny incoming; without the rule
     # the node joins the tailnet and is then unreachable over it.
     info("› allowing tailnet traffic through ufw")
-    subprocess.run(
-        ["arch-chroot", str(ctx.target), "ufw", "allow", "in", "on", "tailscale0"],
-        check=False,
-    )
-
-    rules = ctx.target / "etc" / "ufw" / "user.rules"
-    text = rules.read_text() if rules.exists() else ""
-    if "-i tailscale0 -j ACCEPT" not in text:
-        raise RuntimeError(f"ufw did not record an allow rule for tailscale0 in {rules}")
+    _ufw_allow(ctx, ["in", "on", "tailscale0"], recorded="-i tailscale0 -j ACCEPT", what="tailscale0")
 
 
 def _tailscale_authkey(path: Path) -> str:
