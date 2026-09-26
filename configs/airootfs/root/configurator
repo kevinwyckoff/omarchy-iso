@@ -35,6 +35,17 @@ if [[ ! -r $DISK_PARTITIONING ]]; then
 fi
 source "$DISK_PARTITIONING"
 
+# Disk picker lines and the last-chance wipe summary, shared with
+# test/unit/disk-inspect-test.sh so they can be exercised from lsblk fixtures.
+DISK_INSPECT="${DISK_INSPECT:-/usr/share/omarchy-iso/disk-inspect.sh}"
+[[ -r $DISK_INSPECT ]] ||
+  DISK_INSPECT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../usr/share/omarchy-iso/disk-inspect.sh"
+if [[ ! -r $DISK_INSPECT ]]; then
+  echo "ERROR: disk inspection helpers not found at $DISK_INSPECT" >&2
+  exit 1
+fi
+source "$DISK_INSPECT"
+
 LOGO_WIDTH=$(awk '{ if (length > max) max = length } END { print max+0 }' "$LOGO_PATH")
 
 export GUM_CONFIRM_PROMPT_FOREGROUND="6"
@@ -313,41 +324,59 @@ Keyboard,$keyboard" |
 
 # STEP 3: DISK
 
-get_disk_info() {
-  local device="$1"
-  local size vendor model label
+# The last-chance summary shared by every install path: what dies, what is
+# kept, the drives left alone, and what gets created. Busy partitions on the
+# target come last, in red. Pass free_space mode its partition bounds.
+show_install_summary() {
+  local mode="$1" encrypt="$2" width part where
+  shift 2
 
-  # Get basic disk information
-  size=$(lsblk -dno SIZE "$device" 2>/dev/null)
-  vendor=$(lsblk -dno VENDOR "$device" 2>/dev/null | sed 's/ *$//')
-  model=$(lsblk -dno MODEL "$device" 2>/dev/null | sed 's/ *$//')
+  measure_terminal
+  width=$((TERM_WIDTH - PADDING_LEFT - 1))
+  (( width > 100 )) && width=100
 
-  # Combine vendor and model, avoiding duplication
-  label=""
-  if [[ -n $vendor && -n $model ]]; then
-    if [[ $model == *$vendor* ]]; then
-      label="$model"
-    else
-      label="$vendor $model"
-    fi
-  elif [[ -n $model ]]; then
-    label="$model"
-  elif [[ -n $vendor ]]; then
-    label="$vendor"
+  printf "\033[H\033[2J"
+  echo
+  render_wipe_summary "$disk" "$mode" "$encrypt" "$width" "$@" |
+    awk -v pad="$PADDING_LEFT_SPACES" -v full="$mode" '
+      NR == 1 && full == "full_disk" { printf "%s\033[1;31m%s\033[0m\n", pad, $0; next }
+      { print pad $0 }'
+
+  if [[ $mode == "full_disk" ]]; then
+    while IFS=$'\t' read -r part where; do
+      [[ -n $part ]] || continue
+      [[ $where == "[SWAP]" ]] && where="in use as swap" || where="mounted at $where"
+      echo
+      say --foreground 1 "$part is $where. Release it to erase $disk."
+    done < <(disk_busy_partitions "$disk")
   fi
+  echo
+}
 
-  # Format display string
-  local display="$device"
-  [[ -n $size ]] && display="$display ($size)"
-  [[ -n $label ]] && display="$display - $label"
+# Offer to release whatever holds the target (mounts, swap, open LUKS or LVM),
+# the same cleanup the installer runs before partitioning. Returns 1 to go back.
+release_busy_disk() {
+  gum confirm --affirmative "Release them" --negative "Back" "Release the partitions in use on $disk?" || return 1
+  omarchy-iso-cleanup-disk "$disk" >/dev/null 2>&1 || true
+  disk_inventory_refresh
+  disk_probe_all
+}
 
-  # Append compact partition summary
-  local part_summary
-  part_summary=$(lsblk -nro TYPE,NAME,FSTYPE,MOUNTPOINT "$device" 2>/dev/null | \
-    awk '$1=="part" { printf "%s%s%s", s, ($3==""?"unknown":$3), ($4==""?"":"("$4")"); s=", " }')
-  [[ -n $part_summary ]] && display+=" [$part_summary]"
+# The typed confirmation for a disk with anything on it: the user types the
+# kernel name, which makes them read which drive this is. Returns 0 to go
+# ahead, 1 on Esc, and 130 on Ctrl+C.
+confirm_by_typing_disk_name() {
+  local name="${disk##*/}" answer status
 
-  echo "$display"
+  while true; do
+    # No placeholder: a greyed-out "sda" reads as though it were already typed.
+    answer=$(gum input --placeholder "" --prompt "> " \
+      --header "Type $name to erase this disk, or press Esc to go back")
+    status=$?
+    (( status == 0 )) || return $status
+    [[ $answer == "$name" ]] && return 0
+    say --foreground 1 "That doesn't match $name."
+  done
 }
 
 get_root_disk() {
@@ -613,13 +642,16 @@ run_partition_decide() {
 
   # Default to encrypted and hide the unencrypted path behind Ctrl+C,
   # matching the full-disk flow. The dedicated Omarchy ESP always supports
-  # LUKS, so encryption is always on the table here.
-  local mode="encrypted" affirmative confirm_status
+  # LUKS, so encryption is always on the table here. Nothing is erased, so the
+  # summary is confirmed with a plain Yes/No. Re-read the disk first: the user
+  # may have just made this free space in the partition tool.
+  local mode="encrypted" encrypt affirmative confirm_status
+  disk_inventory_refresh
+  disk_probe_all
 
   while true; do
-    clear_logo
-    echo
-    say "Install Omarchy in the $(to_gb $INSTALL_MAX_B) of free space."
+    [[ $mode == "encrypted" ]] && encrypt=true || encrypt=false
+    show_install_summary free_space "$encrypt" "$EFI_START_B" "$EFI_END_B" "$ROOT_START_B" "$ROOT_END_B"
 
     case $mode in
       encrypted)
@@ -633,12 +665,12 @@ run_partition_decide() {
     echo
 
     gum confirm --affirmative "$affirmative" --negative "No, change it" \
-      "Confirm installing on $disk"
+      "Install Omarchy in the free space on $disk?"
     confirm_status=$?
 
     case $confirm_status in
       0)
-        [[ $mode == "encrypted" ]] && encrypt_installation=true || encrypt_installation=false
+        encrypt_installation=$encrypt
         break
         ;;
       1)
@@ -862,34 +894,41 @@ _EOF_
 }
 
 disk_form() {
-  step "Let's select where to install Omarchy..."
+  local boot_source selected_display
+  local -a options
 
   # Don't offer the install media as an option (Arch ISO mounts it here)
-  local boot_source
-  local exclude_disk
   boot_source=$(findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null || true)
-  exclude_disk=$(get_root_disk "$boot_source")
+  DISK_INSPECT_INSTALL_MEDIUM=$(get_root_disk "$boot_source")
 
-  # List all installable disks, excluding the boot device if present
-  local available_disks
-  available_disks=$(
-    lsblk -dpno NAME,TYPE |
-      awk '$2=="disk"{print $1}' |
-      grep -E '/dev/(sd|hd|vd|nvme|mmcblk|xv)' |
-      { if [[ -n "$exclude_disk" ]]; then grep -Fvx "$exclude_disk"; else cat; fi; }
-  )
+  while true; do
+    step "Let's select where to install Omarchy..."
+    say --foreground 8 "Looking at what's on your disks..."
 
-  # Get available disks and format them with info
-  local disk_options=""
-  while IFS= read -r device; do
-    if [[ -n "$device" ]]; then
-      disk_info=$(get_disk_info "$device")
-      disk_options="$disk_options$disk_info"$'\n'
+    # Every drive is probed up front, in this shell, so the picker can say
+    # what is on each one and the summary never has to probe again.
+    disk_inventory_refresh
+    disk_probe_all
+
+    mapfile -t options < <(
+      installable_disks | while IFS= read -r device; do disk_picker_line "$device"; done
+    )
+    (( ${#options[@]} )) || abort "No disk to install Omarchy on was found."
+
+    step "Let's select where to install Omarchy..."
+    selected_display=$(printf '%s\n' "${options[@]}" | gum choose --header "Select install disk") || abort
+    disk="${selected_display%% *}"
+
+    if disk_is_too_small "$disk"; then
+      step "$disk is too small"
+      say --foreground 1 "$disk is $(human_size "$(disk_size_bytes "$disk")"). Omarchy needs at least $(human_size "$DISK_INSPECT_MIN_FULL_DISK_B"): a 2 GiB boot partition and 32 GiB for the system."
+      echo
+      gum confirm --affirmative "Choose a different disk" --negative "Cancel install" "Pick another disk?" || abort
+      continue
     fi
-  done <<<"$available_disks"
 
-  selected_display=$(echo "$disk_options" | gum choose --header "Select install disk") || abort
-  disk=$(echo "$selected_display" | awk '{print $1}')
+    return 0
+  done
 }
 
 # STEP 4: INSTALL MODE
@@ -946,29 +985,39 @@ install_mode_form() {
   install_mode=$(gum choose --header "Select installation mode on $disk" "${choices[@]}") || abort
 }
 
+# The full-disk wipe confirmation, on the last-chance summary. A disk with any
+# signature on it needs its name typed; a blank one gets a plain Yes/No.
+# Ctrl+C still toggles an unencrypted install. Returns 1 to go back.
 confirm_disk_overwrite() {
-  local mode="encrypted"
-  local affirmative confirm_status
+  local mode="encrypted" encrypt confirm_status
 
   while true; do
-    clear_logo
-    echo
-    say "Everything will be overwritten. There is no recovery possible."
+    [[ $mode == "encrypted" ]] && encrypt=true || encrypt=false
+    show_install_summary full_disk "$encrypt"
+
+    if [[ -n $(disk_busy_partitions "$disk") ]]; then
+      release_busy_disk || return 1
+      continue
+    fi
 
     if [[ $mode == "encrypted" ]]; then
       say --foreground 8 "Press Ctrl+C for unencrypted install."
-      affirmative="Yes, install"
     else
-      affirmative="Yes, install without encryption"
+      say --foreground 8 "Installing without encryption. Press Ctrl+C to encrypt."
     fi
-
     echo
-    gum confirm --affirmative "$affirmative" --negative "No, change it" "Confirm overwriting ${disk}"
-    confirm_status=$?
+
+    if disk_has_signatures "$disk"; then
+      confirm_by_typing_disk_name
+      confirm_status=$?
+    else
+      gum confirm --affirmative "Yes, install" --negative "No, change it" "$disk is blank. Install Omarchy on it?"
+      confirm_status=$?
+    fi
 
     case $confirm_status in
       0)
-        [[ $mode == "encrypted" ]] && encrypt_installation=true || encrypt_installation=false
+        encrypt_installation=$encrypt
         return 0
         ;;
       1)

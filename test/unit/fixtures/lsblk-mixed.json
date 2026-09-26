@@ -1,0 +1,134 @@
+{
+   "blockdevices": [
+      {
+         "name": "sda", "path": "/dev/sda", "type": "disk", "size": 30752636928,
+         "fstype": "iso9660", "fsver": "Joliet Extension", "label": "OMARCHY_202609", "partlabel": null,
+         "parttypename": null, "partn": null, "model": "Ultra", "vendor": "SanDisk ", "serial": "4C530001230725114485",
+         "tran": "usb", "wwn": null, "pttype": "dos", "rm": true, "mountpoints": [null],
+         "children": [
+            {
+               "name": "sda1", "path": "/dev/sda1", "type": "part", "size": 6317441024,
+               "fstype": "iso9660", "fsver": "Joliet Extension", "label": "OMARCHY_202609", "partlabel": null,
+               "parttypename": "Empty", "partn": 1, "model": null, "vendor": null, "serial": null,
+               "tran": null, "wwn": null, "pttype": "dos", "rm": true, "mountpoints": ["/run/archiso/bootmnt"]
+            },
+            {
+               "name": "sda2", "path": "/dev/sda2", "type": "part", "size": 314572800,
+               "fstype": "vfat", "fsver": "FAT16", "label": "ARCHISO_EFI", "partlabel": null,
+               "parttypename": "EFI (FAT-12/16/32)", "partn": 2, "model": null, "vendor": null, "serial": null,
+               "tran": null, "wwn": null, "pttype": "dos", "rm": true, "mountpoints": [null]
+            }
+         ]
+      },
+      {
+         "name": "sdb", "path": "/dev/sdb", "type": "disk", "size": 8053063680,
+         "fstype": null, "fsver": null, "label": null, "partlabel": null,
+         "parttypename": null, "partn": null, "model": "Flash Drive", "vendor": "Generic", "serial": "0000000000001",
+         "tran": "usb", "wwn": null, "pttype": "gpt", "rm": true, "mountpoints": [null],
+         "children": [
+            {
+               "name": "sdb1", "path": "/dev/sdb1", "type": "part", "size": 8051965952,
+               "fstype": "vfat", "fsver": "FAT32", "label": "CIDATA", "partlabel": "cidata",
+               "parttypename": "Microsoft basic data", "partn": 1, "model": null, "vendor": null, "serial": null,
+               "tran": null, "wwn": null, "pttype": "gpt", "rm": true, "mountpoints": [null]
+            }
+         ]
+      },
+      {
+         "name": "sdc", "path": "/dev/sdc", "type": "disk", "size": 17179869184,
+         "fstype": null, "fsver": null, "label": null, "partlabel": null,
+         "parttypename": null, "partn": null, "model": "SSD 16GB", "vendor": "ATA     ", "serial": "SMALL0001",
+         "tran": "sata", "wwn": "0x5000000000000001", "pttype": "gpt", "rm": false, "mountpoints": [null],
+         "children": [
+            {
+               "name": "sdc1", "path": "/dev/sdc1", "type": "part", "size": 17177772032,
+               "fstype": "swap", "fsver": "1", "label": null, "partlabel": null,
+               "parttypename": "Linux swap", "partn": 1, "model": null, "vendor": null, "serial": null,
+               "tran": null, "wwn": null, "pttype": "gpt", "rm": false, "mountpoints": ["[SWAP]"]
+            }
+         ]
+      },
+      {
+         "name": "mmcblk0", "path": "/dev/mmcblk0", "type": "disk", "size": 62537072640,
+         "fstype": null, "fsver": null, "label": null, "partlabel": null,
+         "parttypename": null, "partn": null, "model": null, "vendor": null, "serial": "0x1b2c3d4e",
+         "tran": "mmc", "wwn": null, "pttype": null, "rm": false, "mountpoints": [null]
+      },
+      {
+         "name": "mmcblk0boot0", "path": "/dev/mmcblk0boot0", "type": "disk", "size": 4194304,
+         "fstype": null, "fsver": null, "label": null, "partlabel": null,
+         "parttypename": null, "partn": null, "model": null, "vendor": null, "serial": null,
+         "tran": "mmc", "wwn": null, "pttype": null, "rm": false, "mountpoints": [null]
+      },
+      {
+         "name": "mmcblk0rpmb", "path": "/dev/mmcblk0rpmb", "type": "disk", "size": 4194304,
+         "fstype": null, "fsver": null, "label": null, "partlabel": null,
+         "parttypename": null, "partn": null, "model": null, "vendor": null, "serial": null,
+         "tran": "mmc", "wwn": null, "pttype": null, "rm": false, "mountpoints": [null]
+      },
+      {
+         "name": "zram0", "path": "/dev/zram0", "type": "disk", "size": 4294967296,
+         "fstype": "swap", "fsver": "1", "label": "zram0", "partlabel": null,
+         "parttypename": null, "partn": null, "model": null, "vendor": null, "serial": null,
+         "tran": null, "wwn": null, "pttype": null, "rm": false, "mountpoints": ["[SWAP]"]
+      },
+      {
+         "name": "vda", "path": "/dev/vda", "type": "disk", "size": 42949672960,
+         "fstype": null, "fsver": null, "label": null, "partlabel": null,
+         "parttypename": null, "partn": null, "model": null, "vendor": "0x1af4", "serial": null,
+         "tran": null, "wwn": null, "pttype": null, "rm": false, "mountpoints": [null]
+      },
+      {
+         "name": "nvme0n1", "path": "/dev/nvme0n1", "type": "disk", "size": 500107862016,
+         "fstype": null, "fsver": null, "label": null, "partlabel": null,
+         "parttypename": null, "partn": null, "model": "Samsung SSD 980 PRO 500GB", "vendor": null, "serial": "S69ENX0T899999",
+         "tran": "nvme", "wwn": "eui.002538b111b1c2d3", "pttype": "gpt", "rm": false, "mountpoints": [null],
+         "children": [
+            {
+               "name": "nvme0n1p1", "path": "/dev/nvme0n1p1", "type": "part", "size": 2147483648,
+               "fstype": "vfat", "fsver": "FAT32", "label": null, "partlabel": null,
+               "parttypename": "EFI System", "partn": 1, "model": null, "vendor": null, "serial": null,
+               "tran": "nvme", "wwn": "eui.002538b111b1c2d3", "pttype": "gpt", "rm": false, "mountpoints": [null]
+            },
+            {
+               "name": "nvme0n1p2", "path": "/dev/nvme0n1p2", "type": "part", "size": 497957306368,
+               "fstype": "crypto_LUKS", "fsver": "2", "label": null, "partlabel": null,
+               "parttypename": "Linux filesystem", "partn": 2, "model": null, "vendor": null, "serial": null,
+               "tran": "nvme", "wwn": "eui.002538b111b1c2d3", "pttype": "gpt", "rm": false, "mountpoints": [null]
+            }
+         ]
+      },
+      {
+         "name": "nvme1n1", "path": "/dev/nvme1n1", "type": "disk", "size": 500107862016,
+         "fstype": null, "fsver": null, "label": null, "partlabel": null,
+         "parttypename": null, "partn": null, "model": "Samsung SSD 980 PRO 500GB", "vendor": null, "serial": "S69ENX0T812345",
+         "tran": "nvme", "wwn": "eui.002538b111b1c2d4", "pttype": "gpt", "rm": false, "mountpoints": [null],
+         "children": [
+            {
+               "name": "nvme1n1p1", "path": "/dev/nvme1n1p1", "type": "part", "size": 272629760,
+               "fstype": "vfat", "fsver": "FAT32", "label": "SYSTEM", "partlabel": "EFI system partition",
+               "parttypename": "EFI System", "partn": 1, "model": null, "vendor": null, "serial": null,
+               "tran": "nvme", "wwn": "eui.002538b111b1c2d4", "pttype": "gpt", "rm": false, "mountpoints": [null]
+            },
+            {
+               "name": "nvme1n1p2", "path": "/dev/nvme1n1p2", "type": "part", "size": 16777216,
+               "fstype": null, "fsver": null, "label": null, "partlabel": "Microsoft reserved partition",
+               "parttypename": "Microsoft reserved", "partn": 2, "model": null, "vendor": null, "serial": null,
+               "tran": "nvme", "wwn": "eui.002538b111b1c2d4", "pttype": "gpt", "rm": false, "mountpoints": [null]
+            },
+            {
+               "name": "nvme1n1p3", "path": "/dev/nvme1n1p3", "type": "part", "size": 499132317696,
+               "fstype": "ntfs", "fsver": null, "label": "Windows", "partlabel": "Basic data partition",
+               "parttypename": "Microsoft basic data", "partn": 3, "model": null, "vendor": null, "serial": null,
+               "tran": "nvme", "wwn": "eui.002538b111b1c2d4", "pttype": "gpt", "rm": false, "mountpoints": [null]
+            },
+            {
+               "name": "nvme1n1p4", "path": "/dev/nvme1n1p4", "type": "part", "size": 681574400,
+               "fstype": "ntfs", "fsver": null, "label": "WinRE", "partlabel": null,
+               "parttypename": "Windows recovery environment", "partn": 4, "model": null, "vendor": null, "serial": null,
+               "tran": "nvme", "wwn": "eui.002538b111b1c2d4", "pttype": "gpt", "rm": false, "mountpoints": [null]
+            }
+         ]
+      }
+   ]
+}
