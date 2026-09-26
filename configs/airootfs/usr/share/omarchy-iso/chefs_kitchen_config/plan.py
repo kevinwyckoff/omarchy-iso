@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,9 +23,6 @@ from pathlib import Path
 from . import helpers, resolve
 from .schema import InstallConfig, Issue
 
-# Knobs the schema accepts that this ISO can't install yet. Each later change
-# that adds support removes its entry here.
-_NOT_YET = "is not supported by this ISO yet"
 
 
 @dataclass
@@ -114,6 +112,36 @@ def _check_keyboard(plan: Plan, config: InstallConfig) -> None:
         ))
 
 
+def theme_slug(name: str) -> str:
+    """How omarchy-theme-set names a theme's directory: "Tokyo Night" is tokyo-night."""
+    return re.sub(r"<[^>]+>", "", name).lower().replace(" ", "-")
+
+
+def _check_desktop(plan: Plan, config: InstallConfig) -> None:
+    def warn(path: str, message: str) -> None:
+        plan.issues.append(Issue(path, message, "warning"))
+
+    if config.theme:
+        themes = helpers.iso_list("themes")
+        if themes is None:
+            warn("desktop.theme", "can't be checked here: this isn't an ISO that lists its themes")
+        elif theme_slug(config.theme) not in themes:
+            plan.issues.append(Issue("desktop.theme", f"{config.theme!r} isn't a theme this ISO has: {', '.join(themes)}"))
+    if config.agent:
+        agents = helpers.iso_list("agents")
+        if agents is None:
+            warn("desktop.agent", "can't be checked here: this isn't an ISO that lists its agents")
+        elif config.agent not in agents:
+            plan.issues.append(Issue("desktop.agent", f"{config.agent!r} isn't an agent Omarchy knows: {', '.join(agents)}"))
+        else:
+            warn("desktop.agent", f"{config.agent} installs at first login, which needs a network connection")
+    if config.extra_packages:
+        if not helpers.OFFLINE_MIRROR.is_dir():
+            warn("packages.extra", "can't be checked here: this isn't an ISO with an offline mirror")
+        elif problem := helpers.resolve_offline(config.extra_packages):
+            plan.issues.append(Issue("packages.extra", f"can't all be installed from the ISO's offline mirror: {problem}"))
+
+
 def _check_disk(
     plan: Plan, key: str, selector, devices: list[dict], medium: str, minimum: int, minimum_note: str = ""
 ) -> str | None:
@@ -152,12 +180,7 @@ def make_plan(config: InstallConfig, unattended: bool, width: int = 100) -> Plan
     def refuse(path: str, message: str) -> None:
         plan.issues.append(Issue(path, message))
 
-    if config.theme:
-        refuse("desktop.theme", _NOT_YET)
-    if config.agent:
-        refuse("desktop.agent", _NOT_YET)
-    if config.extra_packages:
-        refuse("packages.extra", _NOT_YET)
+    _check_desktop(plan, config)
 
     _check_keyboard(plan, config)
 

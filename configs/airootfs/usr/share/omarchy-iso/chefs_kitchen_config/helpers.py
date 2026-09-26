@@ -8,6 +8,7 @@ in a Bash subprocess, rather than a second implementation in Python.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -105,6 +106,29 @@ def free_space_summary(disk: str, encrypt: bool, width: int, medium: str, region
         install_medium=medium,
         env={"DISK_INSPECT_SWAP_STRATEGY": swap_strategy},
     )
+
+
+OFFLINE_MIRROR = Path("/var/cache/omarchy/mirror/offline")
+
+
+def iso_list(name: str) -> list[str] | None:
+    """A list build-iso.sh wrote for the bundled runtime (themes, agents), or
+    None when this isn't an ISO that has one."""
+    path = HELPER_DIR / name
+    return [line.strip() for line in path.read_text().splitlines() if line.strip()] if path.exists() else None
+
+
+def resolve_offline(packages: list[str]) -> str | None:
+    """None when every package and its dependencies are in the ISO's offline
+    mirror, otherwise pacman's complaint. The live ISO's pacman.conf is the
+    offline one; a throwaway database keeps this from touching the live system's."""
+    result = subprocess.run(
+        ["bash", "-c", 'db=$(mktemp -d); trap "rm -rf $db" EXIT; '
+         'pacman --dbpath "$db" -Sy >/dev/null 2>&1 && pacman --dbpath "$db" -S --print --print-format %n "$@" >/dev/null',
+         "-", *packages],
+        capture_output=True, text=True,
+    )
+    return None if result.returncode == 0 else (result.stderr.strip() or "pacman could not resolve them")
 
 
 def min_full_disk_bytes() -> int:

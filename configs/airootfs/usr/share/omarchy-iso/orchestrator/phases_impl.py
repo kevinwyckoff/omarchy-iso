@@ -305,6 +305,13 @@ def arch_install_system(ctx: InstallContext) -> None:
             info("› installing Omarchy runtime + omarchy-base.packages")
             installer.add_additional_packages(_runtime_package_list(ctx))
 
+            # install.toml's [packages] extra, from the same offline mirror
+            # (chefs-kitchen plan checked they are all in it).
+            extra = (ctx.omarchy_install.get("packages") or {}).get("extra") or []
+            if extra:
+                info(f"› installing install.toml's extra packages: {' '.join(extra)}")
+                installer.add_additional_packages(extra)
+
             # Tailscale is bundled in the offline mirror but only installed
             # when an autoinstall drive staged an auth key; must happen here,
             # while the mirror is still bind-mounted, not in the phase that
@@ -1508,6 +1515,35 @@ def run_chroot_finalizer(ctx: InstallContext) -> None:
         ["/usr/bin/omarchy-provision-user", "--force", "--first-install"],
         user=ctx.username,
     )
+
+
+def configure_desktop(ctx: InstallContext) -> None:
+    """install.toml's [desktop]: apply the theme now, headless, as the user,
+    as the first-install theme setup does. The agent needs a network and the
+    user's own tools to install, so it is recorded for Omarchy's first-login
+    setup-agent hook, which installs it instead of inviting a choice."""
+    desktop = ctx.omarchy_install.get("desktop") or {}
+    if ctx.defer_provisioning or not desktop:
+        return
+
+    if theme := desktop.get("theme"):
+        info(f"› applying theme: {theme}")
+        _run_target_setup_command(
+            ctx,
+            ["env", "OMARCHY_THEME_HEADLESS=1", "OMARCHY_SETUP_CONTEXT=iso-chroot", "/usr/bin/omarchy-theme-set", theme],
+            user=ctx.username,
+        )
+        # Headless theme-set leaves archiso's Chromium singleton behind, as in install/user/theme.sh.
+        (ctx.target / "home" / ctx.username / ".config" / "chromium" / "SingletonLock").unlink(missing_ok=True)
+
+    if agent := desktop.get("agent"):
+        info(f"› {agent} will install at first login")
+        _run_target_setup_command(
+            ctx,
+            ["bash", "-c", 'mkdir -p ~/.local/state/omarchy && printf "%s\\n" "$1" >~/.local/state/omarchy/first-run-agent',
+             "-", agent],
+            user=ctx.username,
+        )
 
 
 def configure_dns_resolver(ctx: InstallContext) -> None:
