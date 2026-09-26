@@ -82,6 +82,9 @@ def _make_plan(args: argparse.Namespace, unattended: bool) -> planning.Plan | No
         print(plan.target.summary, end="")
         print()
         print(f'Fingerprint of {plan.target.path}: expect_fingerprint = "{plan.target.fingerprint}"')
+    if plan.home:
+        print()
+        print(plan.home.summary, end="")
     if plan.issues:
         print()
         _print_issues(plan.issues)
@@ -103,11 +106,16 @@ def _gum(*args: str) -> subprocess.CompletedProcess:
 
 
 def _confirm(plan: planning.Plan) -> bool:
-    disk = plan.target.path
+    """One confirmation per disk that gets erased: the root disk, then /home's."""
+    return all(_confirm_disk(disk) for disk in (plan.target, plan.home) if disk)
+
+
+def _confirm_disk(target: planning.DiskPlan) -> bool:
+    disk = target.path
     name = os.path.basename(disk)
-    if not plan.target.has_signatures:
-        return _gum("confirm", "--affirmative", "Yes, install", "--negative", "No",
-                    f"{disk} is blank. Install Omarchy on it?").returncode == 0
+    if not target.has_signatures:
+        return _gum("confirm", "--affirmative", "Yes, erase it", "--negative", "No",
+                    f"{disk} is blank. Use it?").returncode == 0
     while True:
         answer = _gum("input", "--placeholder", "", "--prompt", "> ",
                       "--header", f"Type {name} to erase this disk, or press Esc to cancel")
@@ -190,6 +198,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     compile_archinstall.write_inputs(
         out, plan.config, plan.target.path, size, secrets,
         compile_archinstall.detect_kernel(), runtime, settings,
+        home_disk=plan.home.path if plan.home else None,
     )
     print(f"Wrote the installer's inputs to {out}.")
 

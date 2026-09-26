@@ -27,6 +27,11 @@ DISK_INSPECT_MEMINFO="${DISK_INSPECT_MEMINFO:-/proc/meminfo}"
 # never offers it and the summary labels it.
 DISK_INSPECT_INSTALL_MEDIUM="${DISK_INSPECT_INSTALL_MEDIUM:-}"
 
+# An install with /home on a second disk erases two disks. Set the other one
+# here while rendering either summary: the root disk's summary then says where
+# /home goes, and neither lists the other disk as untouched.
+DISK_INSPECT_OTHER_ERASED="${DISK_INSPECT_OTHER_ERASED:-}"
+
 # The whole disk the live system booted from. Arch's ISO mounts its boot
 # partition at /run/archiso/bootmnt; walk from that partition back to its disk
 # so the install medium itself is never a wipe target.
@@ -493,7 +498,7 @@ _disk_created_row() {
 _disk_render_untouched() {
   local target="$1" width="$2" d serial line lines=()
   while IFS= read -r d; do
-    [[ -n $d && $d != "$target" ]] || continue
+    [[ -n $d && $d != "$target" && $d != "$DISK_INSPECT_OTHER_ERASED" ]] || continue
     disk_probe "$d"
     line="$(disk_model "$d")"
     if [[ $d == "$DISK_INSPECT_INSTALL_MEDIUM" ]]; then
@@ -520,6 +525,7 @@ _disk_render_untouched() {
 #
 #   render_wipe_summary <disk> full_disk <encrypt> <width>
 #   render_wipe_summary <disk> free_space <encrypt> <width> <esp_start> <esp_end> <root_start> <root_end>
+#   render_wipe_summary <disk> home_disk <encrypt> <width>      (the second disk of a /home-on-its-own-disk install)
 #
 # Probe the drives first (disk_probe_all) when rendering in a pipeline, or the
 # probes run again in the subshell and their answers are thrown away.
@@ -529,11 +535,11 @@ render_wipe_summary() {
 
   disk_probe "$disk"
 
-  if [[ $mode == "full_disk" ]]; then
-    title="THIS WILL ERASE A DISK"
-  else
-    title="OMARCHY WILL USE FREE SPACE ON THIS DISK"
-  fi
+  case $mode in
+    full_disk) title="THIS WILL ERASE A DISK" ;;
+    home_disk) title="THIS WILL ALSO ERASE A DISK, FOR /home" ;;
+    *) title="OMARCHY WILL USE FREE SPACE ON THIS DISK" ;;
+  esac
   echo "$title"
   printf '%*s\n' "$(( width < 72 ? width - 2 : 70 ))" '' | sed 's/ /─/g'
 
@@ -560,7 +566,7 @@ render_wipe_summary() {
     table+=("$(_disk_table_row "$(partition_number "$part")" "$size" "${fs:-—}" "${label:-—}" "${disk_contents[$part]:-—}" "$width")")
   done < <(disk_partitions "$disk")
 
-  if [[ $mode == "full_disk" ]]; then
+  if [[ $mode == "full_disk" || $mode == "home_disk" ]]; then
     echo "What dies:"
     if (( ${#table[@]} )); then
       _disk_table_row "#" "SIZE" "FILESYSTEM" "LABEL" "WHAT'S ON IT" "$width"
@@ -582,6 +588,16 @@ render_wipe_summary() {
   fi
 
   _disk_render_untouched "$disk" "$width"
+
+  if [[ $mode == "home_disk" ]]; then
+    echo
+    echo "What gets created:"
+    root_desc="btrfs"
+    [[ $encrypt == "true" ]] && root_desc="LUKS2 → btrfs"
+    _disk_created_row "1" "$(human_size $(( $(disk_size_bytes "$disk") / 1048576 * 1048576 - 2 * 1048576 )))" "$root_desc" "/home  (@home)"
+    [[ $encrypt == "true" ]] && echo "      unlocked at boot by a key on the encrypted root: still one passphrase"
+    return 0
+  fi
 
   if [[ $mode == "full_disk" ]]; then
     esp_b=$DISK_INSPECT_ESP_B
@@ -613,7 +629,12 @@ render_wipe_summary() {
   echo
   echo "What gets created:"
   _disk_created_row "$esp_num" "$(human_size "$esp_b")" "vfat" "$esp_mount"
-  _disk_created_row "$root_num" "$(human_size "$root_b")" "$root_desc" "/  (@, @home, @log, @pkg)"
+  if [[ -n $DISK_INSPECT_OTHER_ERASED && $mode == "full_disk" ]]; then
+    _disk_created_row "$root_num" "$(human_size "$root_b")" "$root_desc" "/  (@, @log, @pkg)"
+    echo "      /home goes on $DISK_INSPECT_OTHER_ERASED"
+  else
+    _disk_created_row "$root_num" "$(human_size "$root_b")" "$root_desc" "/  (@, @home, @log, @pkg)"
+  fi
   ram=$(_disk_ram_bytes)
   case ${DISK_INSPECT_SWAP_STRATEGY:-zram+hibernate} in
     zram) echo "      with zram swap, and no hibernation swapfile" ;;

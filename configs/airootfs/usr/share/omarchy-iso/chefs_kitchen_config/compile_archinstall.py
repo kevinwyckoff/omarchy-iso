@@ -64,6 +64,7 @@ def full_disk_configuration(
     kernel: str,
     runtime_package: str,
     settings_package: str,
+    home_disk: str | None = None,
 ) -> dict:
     disk_size_in_mib = disk_size // MIB * MIB
     boot_start = MIB
@@ -94,9 +95,11 @@ def full_disk_configuration(
                         "type": "primary",
                     },
                     {
+                        # With /home on its own disk, @home lives there instead:
+                        # the orchestrator creates and mounts it before any user exists.
                         "btrfs": [
                             {"mountpoint": "/", "name": "@"},
-                            {"mountpoint": "/home", "name": "@home"},
+                            *([] if home_disk else [{"mountpoint": "/home", "name": "@home"}]),
                             {"mountpoint": "/var/log", "name": "@log"},
                             {"mountpoint": "/var/cache/pacman/pkg", "name": "@pkg"},
                         ],
@@ -149,6 +152,7 @@ def full_disk_configuration(
             },
             "storage": {"kernel": kernel},
             "swap": {"strategy": config.swap_strategy},
+            **({"home": {"device": home_disk, "encrypt": config.encryption_enabled}} if home_disk else {}),
         },
         "disk_config": disk_config,
         "hostname": config.hostname,
@@ -199,6 +203,7 @@ def write_inputs(
     kernel: str,
     runtime_package: str,
     settings_package: str,
+    home_disk: str | None = None,
 ) -> None:
     """Write every orchestrator input into `out` (/root on the ISO), replacing
     whatever a previous attempt left there."""
@@ -214,7 +219,9 @@ def write_inputs(
         path.chmod(mode)
         path.write_text(content)
 
-    configuration = full_disk_configuration(config, disk, disk_size, secrets, kernel, runtime_package, settings_package)
+    configuration = full_disk_configuration(
+        config, disk, disk_size, secrets, kernel, runtime_package, settings_package, home_disk
+    )
     write("user_configuration.json", json.dumps(configuration, indent=4) + "\n")
     write("user_credentials.json", json.dumps(credentials(config, secrets), indent=4) + "\n")
 
