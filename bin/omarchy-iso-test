@@ -629,12 +629,12 @@ drive_configurator() {
     capture_console "success-installer-02-prepare-confirm"
     press ret # "Yes, prepare for another owner" is the affirmative default
 
-    # Jumps straight to disk selection, then the overwrite confirm.
+    # Jumps straight to disk selection, then the last-chance wipe summary.
     wait_for_screen "install disk" 60
     capture_console "success-installer-03-prepare-install-disk"
     press ret
 
-    wait_for_screen "recovery possible" 60
+    wait_for_screen "ERASE A DISK" 60
     capture_console "success-installer-04-prepare-disk-warning-encrypted"
     if ! $ENCRYPT; then
       press ctrl-c
@@ -696,13 +696,15 @@ drive_configurator() {
   capture_console "success-installer-10-install-disk"
   press ret # the single virtio disk
 
-  wait_for_screen "installation mode\|recovery possible" 60
+  wait_for_screen "installation mode\|ERASE A DISK" 60
   if ocr_screen | grep -qi "installation mode"; then
     capture_console "success-installer-11-install-mode"
     press ret # "Full disk install" is preselected
   fi
 
-  wait_for_screen "recovery possible" 60
+  # The test disk is blank, so the summary asks a plain Yes/No rather than
+  # for the disk's name to be typed.
+  wait_for_screen "ERASE A DISK" 60
   capture_console "success-installer-12-disk-warning-encrypted"
   if ! $ENCRYPT; then
     press ctrl-c # toggles the confirm to the unencrypted flow
