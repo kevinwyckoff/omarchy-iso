@@ -57,6 +57,16 @@ def detect_kernel(pci_devices: Path = Path("/sys/bus/pci/devices")) -> str:
     return "linux-omarchy"
 
 
+def _desktop_and_packages(config: InstallConfig) -> dict:
+    extra: dict = {}
+    desktop = {key: value for key, value in (("theme", config.theme), ("agent", config.agent)) if value}
+    if desktop:
+        extra["desktop"] = desktop
+    if config.extra_packages:
+        extra["packages"] = {"extra": list(config.extra_packages)}
+    return extra
+
+
 def full_disk_configuration(
     config: InstallConfig,
     disk: str,
@@ -154,6 +164,7 @@ def full_disk_configuration(
             "storage": {"kernel": kernel},
             "swap": {"strategy": config.swap_strategy},
             **({"home": {"device": home_disk, "encrypt": config.encryption_enabled}} if home_disk else {}),
+            **_desktop_and_packages(config),
         },
         "disk_config": disk_config,
         "hostname": config.hostname,
@@ -233,6 +244,7 @@ def pre_mounted_configuration(
             "kernel": kernel,
         },
         "swap": {"strategy": config.swap_strategy},
+        **_desktop_and_packages(config),
     }
     configuration["disk_config"] = {"config_type": "pre_mounted_config", "mountpoint": "/mnt"}
     return configuration

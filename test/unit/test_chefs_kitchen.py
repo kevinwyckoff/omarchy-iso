@@ -160,6 +160,11 @@ class SchemaTest(unittest.TestCase):
         _, issues = parse(minimal(encryption={"enabled": False, "passphrase": {"prompt": True}}))
         self.assertTrue(any("encryption.enabled = false" in e for e in errors(issues)))
 
+    def test_desktop_settings_need_an_account(self):
+        data = minimal(provisioning={"defer": True}, desktop={"theme": "nord"})
+        del data["users"]
+        self.assertTrue(any("first boot" in e for e in errors(parse(data)[1])))
+
     def test_deferred_provisioning_has_no_users_and_no_passphrase(self):
         data = minimal(provisioning={"defer": True})
         self.assertTrue(any("must be empty when provisioning.defer" in e for e in errors(parse(data)[1])))
@@ -373,6 +378,13 @@ class CompileTest(unittest.TestCase):
             result.write_text("efi_dev=/dev/sda5\nroot_device=/dev/sda6\nroot_mapper=/dev/sda6\nluks_uuid=''\nesp_mount=/efi\n")
             mounted = compile_archinstall.PreMounted.from_result_file(result)
             self.assertEqual((mounted.efi_dev, mounted.luks_uuid, mounted.esp_mount), ("/dev/sda5", None, "/efi"))
+
+    def test_desktop_and_packages_reach_the_orchestrator(self):
+        config, _ = parse(minimal(desktop={"theme": "Tokyo Night", "agent": "claude"}, packages={"extra": ["firefox"]}))
+        install = self.compile(config)["omarchy_install"]
+        self.assertEqual(install["desktop"], {"theme": "Tokyo Night", "agent": "claude"})
+        self.assertEqual(install["packages"], {"extra": ["firefox"]})
+        self.assertNotIn("desktop", self.compile()["omarchy_install"])
 
     def test_the_swap_strategy_reaches_the_orchestrator(self):
         self.assertEqual(self.compile()["omarchy_install"]["swap"], {"strategy": "zram+hibernate"})
@@ -713,11 +725,36 @@ class PlanTest(unittest.TestCase):
         self.assertIn("disk.target: /dev/sda is 31 GiB; Omarchy needs at least 32 GiB, its own 2 GiB ESP included",
                       str(result.errors[0]))
 
-    def test_knobs_this_iso_can_not_install_yet(self):
-        for extra in ({"desktop": {"theme": "nord"}}, {"packages": {"extra": ["firefox"]}}):
-            data = self.unattended_config(on_existing_data="wipe")
-            data.update(extra)
-            self.assertIn("not supported by this ISO yet", str(self.make(data).errors[0]))
+    def desktop(self, extra, themes=("tokyo-night", "nord"), agents=("claude", "codex"), offline_problem=None):
+        data = self.unattended_config(on_existing_data="wipe")
+        data.update(extra)
+        lists = {"themes": list(themes) if themes is not None else None,
+                 "agents": list(agents) if agents is not None else None}
+        with mock.patch.object(plan.helpers, "iso_list", side_effect=lists.get), \
+             mock.patch.object(plan.helpers.OFFLINE_MIRROR.__class__, "is_dir", return_value=True), \
+             mock.patch.object(plan.helpers, "resolve_offline", return_value=offline_problem):
+            return self.make(data)
+
+    def test_themes_are_checked_as_theme_set_names_them(self):
+        self.assertTrue(self.desktop({"desktop": {"theme": "Tokyo Night"}}).ok)
+        result = self.desktop({"desktop": {"theme": "Solarized"}})
+        self.assertIn("isn't a theme this ISO has: tokyo-night, nord", str(result.errors[0]))
+
+    def test_agents_are_checked_and_install_at_first_login(self):
+        result = self.desktop({"desktop": {"agent": "claude"}})
+        self.assertTrue(result.ok)
+        self.assertTrue(any("installs at first login" in str(i) for i in result.issues))
+        self.assertIn("isn't an agent Omarchy knows", str(self.desktop({"desktop": {"agent": "clippy"}}).errors[0]))
+
+    def test_extra_packages_must_be_in_the_offline_mirror(self):
+        self.assertTrue(self.desktop({"packages": {"extra": ["firefox"]}}).ok)
+        result = self.desktop({"packages": {"extra": ["nope"]}}, offline_problem="error: target not found: nope")
+        self.assertIn("target not found: nope", str(result.errors[0]))
+
+    def test_without_iso_lists_the_desktop_is_only_warned_about(self):
+        result = self.desktop({"desktop": {"theme": "anything"}}, themes=None)
+        self.assertTrue(result.ok)
+        self.assertTrue(any("can't be checked here" in str(i) for i in result.issues))
 
 
 class ConfirmTest(unittest.TestCase):

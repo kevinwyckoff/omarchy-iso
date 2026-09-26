@@ -73,6 +73,7 @@ passphrase = { same_as_user = "kevin" }        # or { file = "luks.pass" }, { pr
 - **Unattended installs never erase data by default.** With `--yes`, a disk with any signature on it stops the install unless `on_existing_data = "wipe"`. `chefs-kitchen plan` prints the disk's fingerprint for `expect_fingerprint`, which pins the wipe to exactly that layout.
 - **An encrypted unattended install needs the passphrase as a file.** Either `passphrase = { file = … }`, or the user's password as a file with the default `same_as_user`.
 - **The install is recorded.** `/etc/chefs-kitchen/install.toml` on the installed system holds the config it was installed from, with every secret removed.
+- **Desktop and packages.** `[desktop] theme` (any theme the ISO bundles, like `"Tokyo Night"`) is applied during the install. `agent` (a name `omarchy default agent` accepts) installs at first login, since that needs a network. `[packages] extra` installs from the ISO's offline mirror, and `plan` refuses anything that isn't in it.
 - **The wizard writes one too.** Its answers become `/root/install.toml`, and `chefs-kitchen` installs it, so every clicked install is also a described one. It pins `expect_fingerprint` to the disk as the user confirmed it.
 - **From a USB drive.** Type `L` and Return on the installer's first screen to load `install.toml` from a USB drive instead of answering the wizard. The same wipe summary and typed confirmation follow.
 

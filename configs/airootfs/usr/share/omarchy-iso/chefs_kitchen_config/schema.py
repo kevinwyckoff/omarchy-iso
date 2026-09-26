@@ -435,6 +435,8 @@ class _Validator:
         desktop = self.table(data, "desktop", "desktop", {"theme", "agent"})
         config.theme = self.string(desktop, "theme", "desktop.theme")
         config.agent = self.string(desktop, "agent", "desktop.agent")
+        if config.defer_provisioning and (config.theme or config.agent):
+            self.error("desktop", "applies to the owner's account, which provisioning.defer = true creates at first boot")
 
     def packages(self, data: dict, config: InstallConfig) -> None:
         packages = self.table(data, "packages", "packages", {"extra"})

@@ -187,6 +187,23 @@ if [[ ! -f $setup_form ]]; then
 fi
 cp "$setup_form" "$build_cache_dir/airootfs/usr/share/omarchy-iso/setup-form.sh"
 
+# The themes and default agents the bundled runtime knows, for chefs-kitchen to
+# check an install.toml's [desktop] theme and agent against on the ISO, where
+# the runtime itself isn't installed.
+if [[ -d /omarchy-source ]]; then
+  theme_names=$(find /omarchy-source/themes -mindepth 1 -maxdepth 1 -type d -printf '%f\n')
+  agent_script=/omarchy-source/bin/omarchy-default-agent
+else
+  theme_names=$(bsdtar -tf "$omarchy_pkg" 'usr/share/omarchy/themes/*' 2>/dev/null |
+    awk -F/ 'NF >= 5 && $5 != "" { print $5 }')
+  bsdtar -xf "$omarchy_pkg" -C /tmp/omarchy-pkglists usr/bin/omarchy-default-agent 2>/dev/null || true
+  agent_script=/tmp/omarchy-pkglists/usr/bin/omarchy-default-agent
+fi
+printf '%s\n' "$theme_names" | sort -u | grep . >"$build_cache_dir/airootfs/usr/share/omarchy-iso/themes" || true
+# The usage line lists the canonical names: "Usage: omarchy-default-agent <pi|omp|...>".
+sed -n 's/.*Usage: omarchy-default-agent <\([^>]*\)>.*/\1/p' "$agent_script" 2>/dev/null |
+  head -1 | tr '|' '\n' >"$build_cache_dir/airootfs/usr/share/omarchy-iso/agents" || true
+
 # Collect every package we want available in the offline mirror.
 declare -a all_packages
 mapfile -t all_packages < <(
