@@ -14,6 +14,7 @@ that matter: a 2GiB ESP at 1MiB, the root partition filling the disk less
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -181,6 +182,62 @@ def full_disk_configuration(
     }
 
 
+@dataclass
+class PreMounted:
+    """What free-space.sh's free_space_partition reports after it has
+    partitioned, formatted and mounted the free region under /mnt."""
+
+    efi_dev: str
+    root_device: str
+    root_mapper: str
+    luks_uuid: str | None
+    esp_mount: str
+
+    @classmethod
+    def from_result_file(cls, path: Path) -> "PreMounted":
+        values = {}
+        for line in path.read_text().splitlines():
+            key, _, value = line.partition("=")
+            values[key] = shlex.split(value)[0] if value else ""
+        return cls(values["efi_dev"], values["root_device"], values["root_mapper"],
+                   values.get("luks_uuid") or None, values["esp_mount"])
+
+
+def pre_mounted_configuration(
+    config: InstallConfig,
+    mounted: PreMounted,
+    kernel: str,
+    runtime_package: str,
+    settings_package: str,
+) -> dict:
+    """The free-space (protected) install: the target is already partitioned
+    and mounted at /mnt, and archinstall only installs into it."""
+    configuration = full_disk_configuration(
+        config, "", 0, Secrets(), kernel, runtime_package, settings_package
+    )
+    configuration["omarchy_install"] = {
+        "mode": "protected",
+        "defer_provisioning": config.defer_provisioning,
+        "target_mount": "/mnt",
+        "boot": {
+            "esp_mount": mounted.esp_mount,
+            "esp_path": "/EFI/limine",
+            "efi_binary": "limine_x64.efi",
+            "enable_fallback": False,
+        },
+        "storage": {
+            "esp_device": mounted.efi_dev,
+            "root_device": mounted.root_device,
+            "root_mapper": mounted.root_mapper,
+            "luks_uuid": mounted.luks_uuid,
+            "kernel": kernel,
+        },
+        "swap": {"strategy": config.swap_strategy},
+    }
+    configuration["disk_config"] = {"config_type": "pre_mounted_config", "mountpoint": "/mnt"}
+    return configuration
+
+
 def credentials(config: InstallConfig, secrets: Secrets) -> dict:
     if config.defer_provisioning:
         return {"users": []}
@@ -204,6 +261,7 @@ def write_inputs(
     runtime_package: str,
     settings_package: str,
     home_disk: str | None = None,
+    pre_mounted: PreMounted | None = None,
 ) -> None:
     """Write every orchestrator input into `out` (/root on the ISO), replacing
     whatever a previous attempt left there."""
@@ -219,9 +277,12 @@ def write_inputs(
         path.chmod(mode)
         path.write_text(content)
 
-    configuration = full_disk_configuration(
-        config, disk, disk_size, secrets, kernel, runtime_package, settings_package, home_disk
-    )
+    if pre_mounted:
+        configuration = pre_mounted_configuration(config, pre_mounted, kernel, runtime_package, settings_package)
+    else:
+        configuration = full_disk_configuration(
+            config, disk, disk_size, secrets, kernel, runtime_package, settings_package, home_disk
+        )
     write("user_configuration.json", json.dumps(configuration, indent=4) + "\n")
     write("user_credentials.json", json.dumps(credentials(config, secrets), indent=4) + "\n")
 

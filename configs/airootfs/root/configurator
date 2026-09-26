@@ -46,6 +46,26 @@ if [[ ! -r $DISK_INSPECT ]]; then
 fi
 source "$DISK_INSPECT"
 
+# Free-space region analysis (the wizard decides; chefs-kitchen partitions) and
+# the install.toml writer. Same lookup as the helpers above.
+for helper in free-space.sh wizard-toml.sh; do
+  helper_path="/usr/share/omarchy-iso/$helper"
+  [[ -r $helper_path ]] ||
+    helper_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../usr/share/omarchy-iso/$helper"
+  if [[ ! -r $helper_path ]]; then
+    echo "ERROR: installer helper $helper not found" >&2
+    exit 1
+  fi
+  source "$helper_path"
+done
+
+# chefs-kitchen on the ISO; from the checkout for a dry run outside it.
+if command -v chefs-kitchen >/dev/null 2>&1; then
+  CHEFS_KITCHEN=(chefs-kitchen)
+else
+  CHEFS_KITCHEN=(env PYTHONPATH="$(dirname "$DISK_INSPECT")" python3 -m chefs_kitchen_config)
+fi
+
 LOGO_WIDTH=$(awk '{ if (length > max) max = length } END { print max+0 }' "$LOGO_PATH")
 
 export GUM_CONFIRM_PROMPT_FOREGROUND="6"
@@ -120,8 +140,8 @@ greeter() {
   [[ $rows =~ ^[0-9]+$ ]] || rows=${LINES:-24}
   logo_h=$(wc -l <"$LOGO_PATH")
 
-  # logo + blank + tagline + blank + hint
-  content_h=$((logo_h + 4))
+  # logo + blank + tagline + blank + hint + the USB hint
+  content_h=$((logo_h + 5))
   top=$(((rows - content_h) / 2))
   (( top < 0 )) && top=0
   logo_row=$((top + 1))
@@ -140,6 +160,10 @@ greeter() {
   hint="Press Return to Start Install"
   hpad=$(((cols - ${#hint}) / 2)); (( hpad < 0 )) && hpad=0
   printf '\033[%d;%dH\033[2m%s\033[0m' "$hint_row" "$((hpad + 1))" "$hint"
+
+  usb_hint="or type L and press Return to load install.toml from a USB drive"
+  hpad=$(((cols - ${#usb_hint}) / 2)); (( hpad < 0 )) && hpad=0
+  printf '\033[%d;%dH\033[2m%s\033[0m' "$((hint_row + 1))" "$((hpad + 1))" "$usb_hint"
 
   # ColorShift the logo: a green base (indexed color 2) with a cyan accent (6)
   # drifting through, settling on green. Indexed ANSI colors, not hex — the
@@ -174,7 +198,8 @@ greeter() {
     </dev/null >/dev/tty 2>/dev/null &
   anim=$!
 
-  IFS= read -r _ </dev/tty || true
+  greeter_answer=""
+  IFS= read -r greeter_answer </dev/tty || true
   # Tolerate ttfx's kill signal in `wait` so a future `set -e` here can't abort.
   kill "$anim" 2>/dev/null
   wait "$anim" 2>/dev/null || true
@@ -184,6 +209,59 @@ greeter() {
   # Reset the screen so the leftover animation frame doesn't linger under the
   # keyboard step that follows.
   printf '\033[0m\033[H\033[2J\033[?25h'
+}
+
+# The greeter's other entry: an install described in install.toml on a USB
+# drive, installed by chefs-kitchen with the same wipe summary and typed
+# confirmation. Returns 1 to carry on with the wizard instead.
+load_install_toml_from_usb() {
+  local medium part mp label found=() choice source
+
+  step "Looking for install.toml on your drives..."
+  medium=$(disk_install_medium)
+  mp=$(mktemp -d)
+  while read -r part fstype; do
+    [[ $fstype =~ ^(vfat|exfat|ext[234]|ntfs|btrfs|iso9660)$ ]] || continue
+    [[ -n $medium && $(lsblk -no PKNAME "$part" 2>/dev/null) == "${medium#/dev/}" ]] && continue
+    [[ -n $(findmnt -rno TARGET -S "$part" 2>/dev/null) ]] && continue
+    if timeout 10 mount -o ro "$part" "$mp" 2>/dev/null; then
+      if [[ -f $mp/install.toml ]]; then
+        label=$(lsblk -dno LABEL "$part" 2>/dev/null)
+        found+=("$part${label:+ ($label)}")
+      fi
+      umount "$mp"
+    fi
+  done < <(lsblk -rpno PATH,FSTYPE | awk 'NF == 2')
+
+  if (( ${#found[@]} == 0 )); then
+    rmdir "$mp"
+    say "No drive has an install.toml at its top level."
+    echo
+    gum confirm --affirmative "Use the wizard" --negative "Cancel install" "Install with the wizard instead?" || abort
+    return 1
+  fi
+
+  if (( ${#found[@]} == 1 )); then
+    choice=${found[0]}
+  else
+    choice=$(printf '%s\n' "${found[@]}" | gum choose --header "Load install.toml from") || { rmdir "$mp"; return 1; }
+  fi
+  source=${choice%% *}
+
+  # The TOML names its secret files relative to itself, so copy the drive, privately.
+  rm -rf /root/usb
+  mkdir -m 700 /root/usb
+  mount -o ro "$source" "$mp" && cp -r "$mp"/. /root/usb/
+  umount "$mp" 2>/dev/null
+  rmdir "$mp"
+
+  clear
+  if "${CHEFS_KITCHEN[@]}" install --config /root/usb/install.toml --no-launch; then
+    return 0
+  fi
+  echo
+  gum confirm --affirmative "Use the wizard" --negative "Cancel install" "Install with the wizard instead?" || abort
+  return 1
 }
 
 abort() {
@@ -275,9 +353,6 @@ user_form() {
   # mean here; the form itself never aborts.
   omarchy_prompt_username || return $?
   omarchy_prompt_password || return $?
-
-  # Hash the password with SHA-512 crypt ($6$), which is what openssl passwd offers
-  password_hash=$(printf '%s' "$password" | openssl passwd -6 -stdin)
 
   omarchy_prompt_identity || return $?
   omarchy_prompt_hostname || return $?
@@ -463,85 +538,6 @@ detect_kernel() {
 # wait_for_device lives in disk-partitioning.sh: it now reports failure, and
 # every caller here aborts on it.
 
-# disk_step and create_partition fail through this rather than abort() so a
-# half-built layout is undone before the user is handed back their disk.
-disk_abort_hook() {
-  # Release the target before reclaiming its partitions: a mounted filesystem
-  # or an open LUKS mapping would keep parted from removing them.
-  umount -R /mnt 2>/dev/null || true
-  umount /mnt/btrfs-root 2>/dev/null || true
-  rmdir /mnt/btrfs-root 2>/dev/null || true
-  cryptsetup close omarchy_root 2>/dev/null || true
-  rollback_created_parts "$disk"
-  abort "$1"
-}
-
-# Save the configurator answers the installer consumes: git identity as plain
-# files, account details as archinstall credentials. Whether to encrypt is not
-# saved separately: the installer reads it from user_configuration.json, so the
-# choice and the installed disk can't disagree.
-# Deferred-provisioning installs defer the user to first boot: no credentials, and on encrypted
-# targets the orchestrator generates a throwaway LUKS passphrase itself.
-write_user_files() {
-  echo "$full_name" >user_full_name.txt
-  echo "$email_address" >user_email_address.txt
-  rm -f user_encrypt_installation.txt install.stripped.toml
-
-  if $defer_provisioning; then
-    cat <<-_EOF_ >user_credentials.json
-{
-    "users": []
-}
-_EOF_
-    return
-  fi
-
-  local password_escaped password_hash_escaped username_escaped
-  password_escaped=$(echo -n "$password" | jq -Rsa)
-  password_hash_escaped=$(echo -n "$password_hash" | jq -Rsa)
-  username_escaped=$(echo -n "$username" | jq -Rsa)
-
-  local credentials_encryption_line=""
-  if [[ $encrypt_installation == true ]]; then
-    credentials_encryption_line="    \"encryption_password\": $password_escaped,"
-  fi
-
-  cat <<-_EOF_ >user_credentials.json
-{
-$credentials_encryption_line
-    "root_enc_password": $password_hash_escaped,
-    "users": [
-        {
-            "enc_password": $password_hash_escaped,
-            "groups": [],
-            "sudo": true,
-            "username": $username_escaped
-        }
-    ]
-}
-_EOF_
-}
-
-# Show what a dry run would have written, then leave no trace behind.
-print_dry_run_files() {
-  echo -e "User Configuration:"
-  cat user_configuration.json
-
-  echo -e "\n\nUser Credentials:"
-  cat user_credentials.json
-
-  echo -e "\n\nUser Full Name:"
-  cat user_full_name.txt
-
-  echo -e "\nUser Email Address:"
-  cat user_email_address.txt
-
-  echo -e "\nDisk Encryption:"
-  echo "$encrypt_installation"
-
-  rm -f user_configuration.json user_credentials.json user_full_name.txt user_email_address.txt
-}
-
 # Shared error screen for every "can't fit Omarchy here" outcome of the
 # partition install. Offers the partition tool as the meaningful second
 # action so users have a way to actually fix the situation.
@@ -557,9 +553,9 @@ not_enough_space() {
   return 1
 }
 
-# Decide half of the free-space install: checks, free-space analysis, and the
-# encryption confirm. Sets the globals run_partition_execute needs. Returns 1
-# to fall back to the install-mode picker.
+# The free-space install's checks, free-space analysis, encryption choice and
+# confirmation. chefs-kitchen does the partitioning, from install.toml, with
+# the same free-space.sh code. Returns 1 to fall back to the install-mode picker.
 run_partition_decide() {
   step "Checking for BitLocker on $disk"
   local bl_part
@@ -591,75 +587,12 @@ run_partition_decide() {
   partprobe "$disk" 2>/dev/null || true
   sleep 1
 
-  # An unlabeled disk has no partition table for parted to scan, so we
-  # synthesize a whole-disk free region and mklabel gpt before mkpart. Like
-  # parted's, the region ends on its last byte; the disk's last MiB is left
-  # for the backup GPT.
-  local FREE_SPACE_INFO pt_type disk_size_b
-  needs_mklabel=false
-  pt_type=$(lsblk -dno PTTYPE "$disk" 2>/dev/null)
-  if [[ -z "$pt_type" ]]; then
-    disk_size_b=$(lsblk -bdno SIZE "$disk" 2>/dev/null)
-    if [[ -n "$disk_size_b" && "$disk_size_b" -gt 0 ]]; then
-      local _mib=$((1024 * 1024))
-      local _start=$_mib
-      local _end=$(( (disk_size_b - _mib) / _mib * _mib - 1 ))
-      FREE_SPACE_INFO="$_start $_end $((_end - _start + 1))"
-      needs_mklabel=true
-    fi
-  else
-    # -s (script mode) keeps parted from prompting on stderr for warnings
-    # like a stale GPT backup; without it the configurator hangs invisibly.
-    FREE_SPACE_INFO=$(parted -ms "$disk" unit B print free </dev/null 2>/dev/null | \
-      awk -F: '
-        $NF ~ /free/ {
-          start=$2; end=$3; size=$4;
-          gsub(/B/, "", start);
-          gsub(/B/, "", end);
-          gsub(/B/, "", size);
-          if (size+0 > max_size+0) {
-            max_size=size; max_start=start; max_end=end;
-          }
-        }
-        END {
-          if (max_size+0 > 0) printf "%s %s %s\n", max_start, max_end, max_size;
-        }')
-  fi
-
-  if [[ -z "$FREE_SPACE_INFO" ]]; then
-    not_enough_space 0
+  local region
+  if ! region=$(free_space_region "$disk"); then
+    not_enough_space "$region"
     return $?
   fi
-
-  local FREE_START_B FREE_END_B FREE_SIZE_B
-  read -r FREE_START_B FREE_END_B FREE_SIZE_B <<<"$FREE_SPACE_INFO"
-
-  local mib=$((1024 * 1024)) gib=$((1024 * 1024 * 1024))
-  local ALIGN=$mib
-  local EFI_SIZE_B=$((2 * gib))
-  local MIN_INSTALL_B=$((32 * gib))    # Minimum total Omarchy allocation
-
-  # parted reports a free region's end as its last byte, and takes a
-  # partition's end the same way. The ESP ends on its own last byte, so it is
-  # exactly 2GiB and root starts on the MiB boundary right after it. Root ends
-  # on the last byte before the region's last MiB boundary, so a gap of
-  # exactly 32GiB holds 32GiB.
-  EFI_START_B=$(( (FREE_START_B + ALIGN - 1) / ALIGN * ALIGN ))
-  EFI_END_B=$((EFI_START_B + EFI_SIZE_B - 1))
-  ROOT_START_B=$(( (EFI_END_B + 1 + ALIGN - 1) / ALIGN * ALIGN ))
-  ROOT_END_B=$(( (FREE_END_B + 1) / ALIGN * ALIGN - 1 ))
-
-  if (( ROOT_END_B <= ROOT_START_B )); then
-    not_enough_space "$FREE_SIZE_B"
-    return $?
-  fi
-
-  local INSTALL_MAX_B=$((ROOT_END_B + 1 - EFI_START_B))
-
-  if (( INSTALL_MAX_B < MIN_INSTALL_B )); then
-    not_enough_space "$INSTALL_MAX_B"
-    return $?
-  fi
+  read -r needs_mklabel EFI_START_B EFI_END_B ROOT_START_B ROOT_END_B <<<"$region"
 
   # The dedicated Omarchy ESP always supports LUKS, so encryption is always on
   # the table here. Nothing is erased, so the summary is confirmed with a plain
@@ -672,209 +605,6 @@ run_partition_decide() {
   gum confirm --affirmative "Yes, install" --negative "No, change it" \
     "Install Omarchy in the free space on $disk?" || return 1
 
-  if [[ "$encrypt_installation" == "true" ]]; then
-    esp_mount_in_target=/boot
-  else
-    esp_mount_in_target=/efi
-  fi
-
-  kernel_choice=$(detect_kernel)
-
-  # Partition numbers are not knowable until parted assigns them (it fills the
-  # lowest free GPT slot, and freeing space by deleting a partition leaves one
-  # below the highest). run_partition_execute reads them back after creation;
-  # a dry run has nothing to read.
-  efi_part_num=""
-  root_part_num=""
-  efi_dev="<assigned at creation>"
-  root_partition_device="<assigned at creation>"
-  root_mapper="<assigned at creation>"
-  if [[ "$encrypt_installation" == "true" ]]; then
-    root_mapper="/dev/mapper/omarchy_root"
-  fi
-}
-
-# Execute half of the free-space install: partition, format, mount, and write
-# the pre-mounted (protected) install configuration. Runs after the user step
-# so LUKS can be formatted with the user's password.
-run_partition_execute() {
-  local dry=false subvol
-  [[ "${1:-}" == "dry" ]] && dry=true
-
-  if $dry; then
-    $needs_mklabel && say "[dry] would initialize GPT on $disk"
-    say "[dry] would create an EFI partition and a root partition in the free region"
-    say "[dry] partition numbers are assigned by parted at creation, then read back"
-    say "[dry] encrypted=$encrypt_installation kernel=$kernel_choice"
-  else
-    step "Creating partitions on $disk"
-    if $needs_mklabel; then
-      disk_step "initializing GPT on $disk" parted --script "$disk" mklabel gpt
-      partprobe "$disk" 2>/dev/null || true
-      sleep 1
-    fi
-
-    # create_partition reports the number parted actually used; nothing here
-    # may assume it. It sets created_partition_number rather than printing so
-    # the rollback bookkeeping survives (a $(...) would subshell it away).
-    create_partition "$disk" "$EFI_START_B" "$EFI_END_B" fat32 OMARCHY_EFI ||
-      disk_abort_hook "Could not create the EFI partition on $disk"
-    efi_part_num="$created_partition_number"
-
-    create_partition "$disk" "$ROOT_START_B" "$ROOT_END_B" btrfs OMARCHY_ROOT ||
-      disk_abort_hook "Could not create the root partition on $disk"
-    root_part_num="$created_partition_number"
-
-    disk_step "flagging partition $efi_part_num as ESP" \
-      parted --script "$disk" set "$efi_part_num" esp on
-
-    efi_dev=$(partition_path "$disk" "$efi_part_num")
-    root_partition_device=$(partition_path "$disk" "$root_part_num")
-
-    partprobe "$disk"
-    sync
-    sleep 2
-
-    wait_for_device "$efi_dev" || disk_abort_hook "EFI partition $efi_dev never appeared"
-    wait_for_device "$root_partition_device" ||
-      disk_abort_hook "Root partition $root_partition_device never appeared"
-
-    # Both partitions are ours and brand new, but the space they occupy may
-    # carry signatures from whatever was deleted to free it.
-    disk_step "clearing stale signatures on $efi_dev" wipefs -af "$efi_dev"
-    disk_step "clearing stale signatures on $root_partition_device" wipefs -af "$root_partition_device"
-
-    if [[ "$encrypt_installation" == "true" ]]; then
-      step "Setting up LUKS2 on $root_partition_device"
-      # Kept as pipes rather than routed through disk_step: the passphrase must
-      # not become an argv the process table can show. Folding stderr into
-      # stdout still lands any error in the install log.
-      if ! printf "%s" "$password" |
-        cryptsetup luksFormat --type luks2 --batch-mode "$root_partition_device" - 2>&1; then
-        disk_abort_hook "Formatting LUKS2 on $root_partition_device failed"
-      fi
-      if ! printf "%s" "$password" |
-        cryptsetup open "$root_partition_device" omarchy_root - 2>&1; then
-        disk_abort_hook "Opening the encrypted root on $root_partition_device failed"
-      fi
-      root_mapper="/dev/mapper/omarchy_root"
-    else
-      root_mapper="$root_partition_device"
-    fi
-
-    step "Creating Btrfs filesystem and subvolumes"
-    disk_step "creating the Btrfs filesystem on $root_mapper" \
-      mkfs.btrfs -f -L OMARCHY "$root_mapper"
-    wait_for_device "$root_mapper" || disk_abort_hook "Root device $root_mapper never appeared"
-
-    mkdir -p /mnt/btrfs-root
-    disk_step "mounting $root_mapper" mount "$root_mapper" /mnt/btrfs-root
-    for subvol in @ @home @log @pkg; do
-      disk_step "creating subvolume $subvol" btrfs subvolume create "/mnt/btrfs-root/$subvol"
-    done
-    umount /mnt/btrfs-root
-    rmdir /mnt/btrfs-root
-
-    disk_step "mounting the target root" \
-      mount -o noatime,compress=zstd,subvol=@ "$root_mapper" /mnt
-    mkdir -p /mnt/home /mnt/var/log /mnt/var/cache/pacman/pkg /mnt"$esp_mount_in_target"
-    disk_step "mounting /home" \
-      mount -o noatime,compress=zstd,subvol=@home "$root_mapper" /mnt/home
-    disk_step "mounting /var/log" \
-      mount -o noatime,compress=zstd,subvol=@log "$root_mapper" /mnt/var/log
-    disk_step "mounting the package cache" \
-      mount -o noatime,compress=zstd,subvol=@pkg "$root_mapper" /mnt/var/cache/pacman/pkg
-
-    disk_step "creating the ESP filesystem on $efi_dev" mkfs.fat -F32 -n OMARCHY_EFI "$efi_dev"
-    disk_step "mounting the ESP" mount "$efi_dev" /mnt"$esp_mount_in_target"
-
-    # The orchestrator's first act is to verify this handoff. Check it here so
-    # a failure names the step that broke rather than surfacing later as
-    # "protected mode: /mnt is not a mountpoint".
-    mountpoint -q /mnt ||
-      disk_abort_hook "Target /mnt is not mounted; not starting the installer"
-    mountpoint -q "/mnt$esp_mount_in_target" ||
-      disk_abort_hook "ESP is not mounted at /mnt$esp_mount_in_target"
-  fi
-
-  local luks_uuid_json="null" luks_uuid
-  if [[ "$encrypt_installation" == "true" ]]; then
-    if $dry; then
-      luks_uuid="00000000-0000-0000-0000-000000000000"
-    else
-      luks_uuid=$(blkid -s UUID -o value "$root_partition_device")
-    fi
-    luks_uuid_json="\"$luks_uuid\""
-  fi
-
-  cat <<-_EOF_ >user_configuration.json
-{
-    "app_config": null,
-    "archinstall-language": "English",
-    "auth_config": {},
-    "audio_config": { "audio": "pipewire" },
-    "bootloader_config": { "bootloader": "Limine", "uki": false, "removable": false },
-    "custom_commands": [],
-    "omarchy_install": {
-        "mode": "protected",
-        "target_mount": "/mnt",
-        "boot": {
-            "esp_mount": "$esp_mount_in_target",
-            "esp_path": "/EFI/limine",
-            "efi_binary": "limine_x64.efi",
-            "enable_fallback": false
-        },
-        "storage": {
-            "esp_device": "$efi_dev",
-            "root_device": "$root_partition_device",
-            "root_mapper": "$root_mapper",
-            "luks_uuid": $luks_uuid_json,
-            "kernel": "$kernel_choice"
-        }
-    },
-    "disk_config": {
-        "config_type": "pre_mounted_config",
-        "mountpoint": "/mnt"
-    },
-    "hostname": "$hostname",
-    "kernels": [ "$kernel_choice" ],
-    "network_config": { "type": "iso" },
-    "ntp": true,
-    "parallel_downloads": 8,
-    "script": null,
-    "services": [],
-    "swap": true,
-    "timezone": "$timezone",
-    "locale_config": {
-        "kb_layout": "$keyboard",
-        "sys_enc": "UTF-8",
-        "sys_lang": "en_US.UTF-8"
-    },
-    "mirror_config": {
-        "custom_repositories": [],
-        "custom_servers": [
-            {"url": "https://mirror.omarchy.org/\$repo/os/\$arch"},
-            {"url": "https://mirror.rackspace.com/archlinux/\$repo/os/\$arch"},
-            {"url": "https://geo.mirror.pkgbuild.com/\$repo/os/\$arch"}
-        ],
-        "mirror_regions": {},
-        "optional_repositories": []
-    },
-    "packages": [
-        "base-devel",
-        "git",
-        "omarchy-keyring",
-        "$OMARCHY_SETTINGS_PACKAGE",
-        "$OMARCHY_RUNTIME_PACKAGE"
-    ],
-    "profile_config": {
-        "gfx_driver": null,
-        "greeter": null,
-        "profile": {}
-    },
-    "version": "3.0.9"
-}
-_EOF_
 }
 
 disk_form() {
@@ -1046,6 +776,10 @@ wait_for_stable_terminal
 
 greeter
 
+if [[ ${greeter_answer,,} == "l" ]] && load_install_toml_from_usb; then
+  exit 0
+fi
+
 keyboard_form
 
 # Normal install: keyboard (loaded above, so the LUKS passphrase is typed under
@@ -1063,7 +797,6 @@ if $defer_provisioning; then
   keyboard="us"
   username=""
   password=""
-  password_hash=""
   full_name=""
   email_address=""
   # Neutral defaults for the install; the owner overwrites both in the
@@ -1085,175 +818,30 @@ fi
 
 clear
 
-write_user_files
+# Every clicked install is also a described one: write the answers as
+# install.toml and let chefs-kitchen install it, the same path a cidata drive's
+# install.toml takes. The disk's fingerprint pins the install to the disk as
+# the user just confirmed it.
+install_toml=/root/install.toml
+if [[ ${1:-} == "dry" ]]; then
+  # Show what would be installed, and leave no trace behind.
+  install_toml=$(mktemp)
+  WIZARD_SECRETS_DIR=$(mktemp -d)
+fi
 
-if [[ $install_target == "free_space" ]]; then
-  run_partition_execute "$@"
+disk_inventory_refresh
+disk_fingerprint=$("${CHEFS_KITCHEN[@]}" fingerprint "$disk") || abort "Could not read $disk's partition table"
+write_install_toml "$install_toml"
 
-  if [[ ${1:-} == "dry" ]]; then
-    print_dry_run_files
-  fi
+if [[ ${1:-} == "dry" ]]; then
+  echo "install.toml:"
+  cat "$install_toml"
+  echo
+  "${CHEFS_KITCHEN[@]}" validate "$install_toml"
+  rm -rf "$install_toml" "$WIZARD_SECRETS_DIR"
   exit 0
 fi
 
-# Setup partition layout
-disk_size=$(lsblk -bdno SIZE "$disk")
-mib=$((1024 * 1024))
-gib=$((mib * 1024))
-disk_size_in_mib=$((disk_size / mib * mib)) # Rounds to nearest MiB
-
-gpt_backup_reserve=$((mib))
-boot_partition_start=$((mib))
-boot_partition_size=$((2 * gib))
-
-main_partition_start=$((boot_partition_size + boot_partition_start))
-main_partition_size=$((disk_size_in_mib - main_partition_start - gpt_backup_reserve))
-
-kernel_choice=$(detect_kernel)
-
-if [[ $encrypt_installation == true ]]; then
-  # Deferred-provisioning installs carry no password: the orchestrator generates a throwaway
-  # LUKS passphrase and stages it for the first-boot re-key.
-  if $defer_provisioning; then
-    encryption_password_line=""
-  else
-    encryption_password_line=",
-            \"encryption_password\": $(echo -n "$password" | jq -Rsa)"
-  fi
-  disk_encryption_config=$(cat <<-_EOF_
-,
-        "disk_encryption": {
-            "encryption_type": "luks",
-            "lvm_volumes": [],
-            "iter_time": 2000,
-            "partitions": [ "8c2c2b92-1070-455d-b76a-56263bab24aa" ]$encryption_password_line
-        }
-_EOF_
-)
-else
-  disk_encryption_config=""
-fi
-
-cat <<-_EOF_ >user_configuration.json
-{
-    "app_config": null,
-    "archinstall-language": "English",
-    "auth_config": {},
-    "audio_config": { "audio": "pipewire" },
-    "bootloader_config": { "bootloader": "Limine", "uki": false, "removable": false },
-    "custom_commands": [],
-    "omarchy_install": {
-        "mode": "full_disk",
-        "defer_provisioning": $defer_provisioning,
-        "target_mount": "/mnt",
-        "boot": {
-            "esp_mount": "/boot",
-            "esp_path": "/EFI/limine",
-            "efi_binary": "limine_x64.efi",
-            "enable_fallback": true
-        },
-        "storage": {
-            "kernel": "$kernel_choice"
-        }
-    },
-    "disk_config": {
-        "config_type": "default_layout",
-        "device_modifications": [
-            {
-                "device": "$disk",
-                "partitions": [
-                    {
-                        "btrfs": [],
-                        "dev_path": null,
-                        "flags": [ "boot", "esp" ],
-                        "fs_type": "fat32",
-                        "mount_options": [],
-                        "mountpoint": "/boot",
-                        "obj_id": "ea21d3f2-82bb-49cc-ab5d-6f81ae94e18d",
-                        "size": {
-                            "sector_size": { "unit": "B", "value": 512 },
-                            "unit": "B",
-                            "value": $boot_partition_size
-                        },
-                        "start": {
-                            "sector_size": { "unit": "B", "value": 512 },
-                            "unit": "B",
-                            "value": $boot_partition_start
-                        },
-                        "status": "create",
-                        "type": "primary"
-                    },
-                    {
-                        "btrfs": [
-                            { "mountpoint": "/", "name": "@" },
-                            { "mountpoint": "/home", "name": "@home" },
-                            { "mountpoint": "/var/log", "name": "@log" },
-                            { "mountpoint": "/var/cache/pacman/pkg", "name": "@pkg" }
-                        ],
-                        "dev_path": null,
-                        "flags": [],
-                        "fs_type": "btrfs",
-                        "mount_options": [ "compress=zstd" ],
-                        "mountpoint": null,
-                        "obj_id": "8c2c2b92-1070-455d-b76a-56263bab24aa",
-                        "size": {
-                            "sector_size": { "unit": "B", "value": 512 },
-                            "unit": "B",
-                            "value": $main_partition_size
-                        },
-                        "start": {
-                            "sector_size": { "unit": "B", "value": 512 },
-                            "unit": "B",
-                            "value": $main_partition_start
-                        },
-                        "status": "create",
-                        "type": "primary"
-                    }
-                ],
-                "wipe": true
-            }
-        ]$disk_encryption_config
-    },
-    "hostname": "$hostname",
-    "kernels": [ "$kernel_choice" ],
-    "network_config": { "type": "iso" },
-    "ntp": true,
-    "parallel_downloads": 8,
-    "script": null,
-    "services": [],
-    "swap": true,
-    "timezone": "$timezone",
-    "locale_config": {
-        "kb_layout": "$keyboard",
-        "sys_enc": "UTF-8",
-        "sys_lang": "en_US.UTF-8"
-    },
-    "mirror_config": {
-        "custom_repositories": [],
-        "custom_servers": [
-            {"url": "https://mirror.omarchy.org/\$repo/os/\$arch"},
-            {"url": "https://mirror.rackspace.com/archlinux/\$repo/os/\$arch"},
-            {"url": "https://geo.mirror.pkgbuild.com/\$repo/os/\$arch"}
-        ],
-        "mirror_regions": {},
-        "optional_repositories": []
-    },
-    "packages": [
-        "base-devel",
-        "git",
-        "omarchy-keyring",
-        "$OMARCHY_SETTINGS_PACKAGE",
-        "$OMARCHY_RUNTIME_PACKAGE"
-    ],
-    "profile_config": {
-        "gfx_driver": null,
-        "greeter": null,
-        "profile": {}
-    },
-    "version": "3.0.9"
-}
-_EOF_
-
-if [[ $1 == "dry" ]]; then
-  print_dry_run_files
+if ! "${CHEFS_KITCHEN[@]}" install --config "$install_toml" --yes --no-launch; then
+  abort "The installer could not use what was chosen above. Nothing has been installed."
 fi

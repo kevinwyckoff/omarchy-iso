@@ -352,6 +352,28 @@ class CompileTest(unittest.TestCase):
         self.assertEqual(configuration["omarchy_install"]["home"], {"device": "/dev/vdb", "encrypt": True})
         self.assertNotIn("home", self.compile()["omarchy_install"])
 
+    def test_a_free_space_install_is_pre_mounted(self):
+        mounted = compile_archinstall.PreMounted("/dev/sda5", "/dev/sda6", "/dev/mapper/omarchy_root", "1234-abcd", "/boot")
+        configuration = compile_archinstall.pre_mounted_configuration(
+            self.config, mounted, "linux-omarchy", "omarchy-dev", "omarchy-settings-dev"
+        )
+        self.assertEqual(configuration["disk_config"], {"config_type": "pre_mounted_config", "mountpoint": "/mnt"})
+        install = configuration["omarchy_install"]
+        self.assertEqual(install["mode"], "protected")
+        self.assertEqual(install["boot"]["esp_mount"], "/boot")
+        self.assertFalse(install["boot"]["enable_fallback"])
+        self.assertEqual(install["storage"], {"esp_device": "/dev/sda5", "root_device": "/dev/sda6",
+                                              "root_mapper": "/dev/mapper/omarchy_root", "luks_uuid": "1234-abcd",
+                                              "kernel": "linux-omarchy"})
+        self.assertEqual(configuration["hostname"], "marvin")
+
+    def test_free_space_results_are_read_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = Path(tmp) / "result"
+            result.write_text("efi_dev=/dev/sda5\nroot_device=/dev/sda6\nroot_mapper=/dev/sda6\nluks_uuid=''\nesp_mount=/efi\n")
+            mounted = compile_archinstall.PreMounted.from_result_file(result)
+            self.assertEqual((mounted.efi_dev, mounted.luks_uuid, mounted.esp_mount), ("/dev/sda5", None, "/efi"))
+
     def test_the_swap_strategy_reaches_the_orchestrator(self):
         self.assertEqual(self.compile()["omarchy_install"]["swap"], {"strategy": "zram+hibernate"})
         config, _ = parse(minimal(swap={"strategy": "none"}))
@@ -400,6 +422,27 @@ LSBLK = {
         {"name": "sdc", "path": "/dev/sdc", "type": "disk", "size": 42949672960, "serial": "DUP", "wwn": None},
     ]
 }
+
+
+class HelpersTest(unittest.TestCase):
+    """The Bash bridge itself, against stub scripts: the arguments must reach
+    the function intact."""
+
+    def test_free_space_passes_every_argument(self):
+        from chefs_kitchen_config import helpers
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "disk-partitioning.sh").write_text("partitioning_loaded=yes\n")
+            Path(tmp, "free-space.sh").write_text('echo_args() { echo "$partitioning_loaded $#: $*"; }\n')
+            with mock.patch.object(helpers, "HELPER_DIR", Path(tmp)):
+                result = helpers.free_space('echo_args "$@"', "/dev/sda", "true", "x y")
+        self.assertEqual(result.stdout, "yes 3: /dev/sda true x y\n")
+
+    def test_disk_inspect_passes_every_argument(self):
+        from chefs_kitchen_config import helpers
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "disk-inspect.sh").write_text('disk_inventory_refresh() { :; }\necho_args() { echo "$#: $*"; }\n')
+            with mock.patch.object(helpers, "HELPER_DIR", Path(tmp)):
+                self.assertEqual(helpers.disk_inspect('echo_args "$@"', "/dev/sda", "full_disk"), "2: /dev/sda full_disk\n")
 
 
 class ResolveTest(unittest.TestCase):
@@ -515,6 +558,26 @@ class PlanTest(unittest.TestCase):
         data["disk"]["home"]["disk"] = {"serial": "S69ENX0T812345"}
         parsed, issues = parse(data)
         self.assertTrue(any("different disk" in e for e in errors(issues)))
+
+    def free_space(self, region=(False, 400 * 2**30, 402 * 2**30, 402 * 2**30 + 2**20, 460 * 2**30), bitlocker=()):
+        data = self.unattended_config()
+        data["disk"]["mode"] = "free-space"
+        with mock.patch.object(plan.helpers, "free_space_region", return_value=region), \
+             mock.patch.object(plan.helpers, "bitlocker_partitions", return_value=list(bitlocker)), \
+             mock.patch.object(plan.helpers, "free_space_summary", return_value="OMARCHY WILL USE FREE SPACE\n"):
+            return self.make(data)
+
+    def test_free_space_ignores_on_existing_data(self):
+        result = self.free_space()
+        self.assertTrue(result.ok, [str(i) for i in result.issues])
+        self.assertEqual(result.target.region[1], 400 * 2**30)
+        self.assertEqual(result.target.summary, "OMARCHY WILL USE FREE SPACE\n")
+
+    def test_free_space_needs_room(self):
+        self.assertIn("Omarchy needs a 2 GiB ESP and 32 GiB", str(self.free_space(region=20 * 2**30).errors[0]))
+
+    def test_free_space_refuses_bitlocker(self):
+        self.assertIn("BitLocker", str(self.free_space(bitlocker=["/dev/sda3"]).errors[0]))
 
     def test_every_swap_strategy_can_install(self):
         for strategy in ("zram+hibernate", "zram", "none"):
