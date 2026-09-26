@@ -610,6 +610,16 @@ audio-panel|meta_l-ctrl-a|omarchy-keyboard-panel|omarchy.audio'
 
 # ----------------------------------------------------- driving the installer
 
+# The encryption screen preselects "Encrypted (recommended)"; "Not encrypted"
+# is the row below it. A wrong choice still surfaces later: an encrypted
+# install stalls at the LUKS prompt on first boot and SSH never comes up.
+choose_encryption() {
+  wait_for_screen "Disk encryption" 60
+  $ENCRYPT || press down
+  capture_console "$1"
+  press ret
+}
+
 drive_configurator() {
   log "Driving the installer wizard"
 
@@ -629,22 +639,16 @@ drive_configurator() {
     capture_console "success-installer-02-prepare-confirm"
     press ret # "Yes, prepare for another owner" is the affirmative default
 
-    # Jumps straight to disk selection, then the last-chance wipe summary.
+    # Jumps straight to disk selection, the encryption choice, then the
+    # last-chance wipe summary.
     wait_for_screen "install disk" 60
     capture_console "success-installer-03-prepare-install-disk"
     press ret
 
+    choose_encryption "success-installer-04-prepare-encryption"
+
     wait_for_screen "ERASE A DISK" 60
-    capture_console "success-installer-04-prepare-disk-warning-encrypted"
-    if ! $ENCRYPT; then
-      press ctrl-c
-      # The toggled confirm ("Yes, install without encryption") is a highlighted
-      # button OCR cannot read, so don't wait for it. A failed toggle still
-      # surfaces: the encrypted install stalls at the LUKS prompt on first boot
-      # and SSH never comes up.
-      sleep 2
-      capture_console "success-installer-05-prepare-disk-warning-unencrypted"
-    fi
+    capture_console "success-installer-05-prepare-disk-warning"
     press ret
     sleep 2
     capture_console "success-installer-13-install-started"
@@ -696,25 +700,19 @@ drive_configurator() {
   capture_console "success-installer-10-install-disk"
   press ret # the single virtio disk
 
-  wait_for_screen "installation mode\|ERASE A DISK" 60
+  wait_for_screen "installation mode\|Disk encryption" 60
   if ocr_screen | grep -qi "installation mode"; then
     capture_console "success-installer-11-install-mode"
     press ret # "Full disk install" is preselected
   fi
 
+  choose_encryption "success-installer-12-encryption"
+
   # The test disk is blank, so the summary asks a plain Yes/No rather than
-  # for the disk's name to be typed.
+  # for the disk's name to be typed. It shows the chosen layout under "What
+  # gets created" (LUKS2 or plain btrfs), which the capture records.
   wait_for_screen "ERASE A DISK" 60
-  capture_console "success-installer-12-disk-warning-encrypted"
-  if ! $ENCRYPT; then
-    press ctrl-c # toggles the confirm to the unencrypted flow
-    # The toggled confirm ("Yes, install without encryption") is a highlighted
-    # button OCR cannot read, so don't wait for it. A failed toggle still
-    # surfaces: the encrypted install stalls at the LUKS prompt on first boot
-    # and SSH never comes up.
-    sleep 2
-    capture_console "success-installer-13-disk-warning-unencrypted"
-  fi
+  capture_console "success-installer-13-disk-warning"
   press ret
 
   sleep 2
