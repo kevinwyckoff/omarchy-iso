@@ -317,17 +317,6 @@
         "uid": 0,
         "user": "root"
       },
-      "/etc/pacman.d/hooks/99-omarchy-limine.hook": {
-        "gid": 0,
-        "group": "root",
-        "mode": "0o644",
-        "sha256": "a16a30d871791ef578613c509baf78a3ad9a4af1a6fa72151d4f2483094884cd",
-        "size": 244,
-        "text": "[Trigger]\nOperation = Upgrade\nType = Package\nTarget = limine\n\n[Action]\nDescription = Deploying Omarchy Limine after upgrade...\nWhen = PostTransaction\nExec = /bin/sh -c \"/usr/bin/cp /usr/share/limine/BOOTX64.EFI /boot/EFI/limine/limine_x64.efi\"\n",
-        "type": "file",
-        "uid": 0,
-        "user": "root"
-      },
       "/etc/pacman.d/mirrorlist": {
         "gid": 0,
         "group": "root",

@@ -423,8 +423,16 @@ def _install_limine_efi(
     target_path = target_dir / efi_binary
     _copy_required(limine_path / source_name, ctx.target / target_path.relative_to("/"))
 
-    hook_command = f"/usr/bin/cp /usr/share/limine/{source_name} {target_path}"
-    _write_limine_pacman_hook(ctx.target, hook_command)
+    # limine-mkinitcpio-hook's 80-limine-efi-deploy.hook runs limine-install
+    # after every limine upgrade, which redeploys EFI/limine/limine_x64.efi on
+    # the ESP_PATH written to /etc/default/limine, then enrolls limine.conf's
+    # hash into it and signs it where those are set up. A plain copy after it
+    # would undo both, so only a loader elsewhere gets a hook of its own,
+    # including the removable EFI/BOOT slot, which limine-install does not
+    # always refresh.
+    if Path(esp_path.lstrip("/")) / efi_binary != Path("EFI/limine/limine_x64.efi"):
+        hook_command = f"/usr/bin/cp /usr/share/limine/{source_name} {target_path}"
+        _write_limine_pacman_hook(ctx.target, hook_command)
 
     loader = "\\" + str(Path(esp_path) / efi_binary).strip("/").replace("/", "\\")
     _register_limine_efi_entry(disk, part, loader, pre_state=pre_state)
