@@ -44,13 +44,13 @@ These are the configurator's own output files, so the way to get a starting set 
 | `user_credentials.json` | Yes | Username and password hash |
 | `user_full_name.txt` | No | Git full name |
 | `user_email_address.txt` | No | Git email |
-| `user_encrypt_installation.txt` | No | `true` when `user_configuration.json` carries a `disk_encryption` block; defaults to false |
+| `user_encrypt_installation.txt` | No | Legacy, no longer needed: encryption is read from `user_configuration.json` (see below) |
 | `authorized_keys` | No | SSH public keys in sshd's own format, one per line |
 | `tailscale_authkey` | No | Tailscale auth key; the machine joins your tailnet on first boot |
 
 Both required files must be present or the installer falls back to the configurator. Generate the password hash for `user_credentials.json` with `openssl passwd -6 "yourpassword"`.
 
-Encryption itself is configured by the `disk_encryption` block inside `user_configuration.json` — which carries the passphrase in plaintext, so treat a drive built from an encrypted install accordingly. The flag file must match it: it drives the encrypted install's SDDM autologin and the final boot validation, not the encryption.
+Encryption is configured by the `disk_encryption` block inside `user_configuration.json` — which carries the passphrase in plaintext, so treat a drive built from an encrypted install accordingly. The installer takes whether the install is encrypted from that block (or, for a pre-mounted config, from `omarchy_install.storage.luks_uuid`), and that drives SDDM autologin and the final boot validation. Older drives that also carry `user_encrypt_installation.txt` still work: the file only decides for a pre-mounted config with no `luks_uuid`, and if it disagrees with the configuration the install log says so and the configuration wins.
 
 `authorized_keys` is the same file sshd reads — copy your own or write one key per line:
 
