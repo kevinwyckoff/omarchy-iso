@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .ui import info
+
 
 @dataclass
 class InstallContext:
@@ -113,7 +115,9 @@ class InstallContext:
             creds_path=creds_path,
             full_name=_read_text(os.environ.get("OMARCHY_INSTALL_FULL_NAME_FILE")),
             email=_read_text(os.environ.get("OMARCHY_INSTALL_EMAIL_FILE")),
-            encrypt=_read_text(os.environ.get("OMARCHY_INSTALL_ENCRYPT_FILE")).lower() in ("true", "yes", "1"),
+            encrypt=_install_encrypted(
+                user_configuration, omarchy_install, _read_text(os.environ.get("OMARCHY_INSTALL_ENCRYPT_FILE"))
+            ),
             authorized_keys_path=_optional_path(os.environ.get("OMARCHY_INSTALL_AUTHORIZED_KEYS_FILE")),
             tailscale_authkey_path=_optional_path(os.environ.get("OMARCHY_INSTALL_TAILSCALE_AUTHKEY_FILE")),
             user_configuration=user_configuration,
@@ -148,6 +152,49 @@ class InstallContext:
     @property
     def is_protected(self) -> bool:
         return self.mode == "protected"
+
+
+def config_encryption(user_configuration: dict, omarchy_install: dict) -> bool | None:
+    """Whether the install configuration itself encrypts the root.
+
+    A full-disk install is encrypted exactly when archinstall is handed a
+    disk_encryption block. A pre-mounted (protected) install was encrypted by
+    whoever mounted it, and records that as storage.luks_uuid, which the
+    configurator always writes (null when unencrypted). None means the
+    configuration doesn't say: a hand-written pre-mounted config with no
+    luks_uuid key."""
+    mode = omarchy_install.get("mode")
+    if not mode:
+        config_type = (user_configuration.get("disk_config") or {}).get("config_type")
+        mode = "protected" if config_type == "pre_mounted_config" else "full_disk"
+
+    if mode == "protected":
+        storage = omarchy_install.get("storage") or {}
+        if "luks_uuid" not in storage:
+            return None
+        return bool(storage["luks_uuid"])
+
+    disk_encryption = (user_configuration.get("disk_config") or {}).get("disk_encryption")
+    return bool(disk_encryption) and disk_encryption.get("encryption_type", "luks") != "no_encryption"
+
+
+def _install_encrypted(user_configuration: dict, omarchy_install: dict, legacy_flag: str) -> bool:
+    """One answer to "is this install encrypted?" for autologin, provisioning
+    and boot validation, taken from the configuration so it can't disagree
+    with what gets installed. user_encrypt_installation.txt, which older
+    autoinstall drives carry, only decides when the configuration can't; when
+    the two disagree the configuration wins and the log says so."""
+    flag = legacy_flag.lower() in ("true", "yes", "1") if legacy_flag else None
+    encrypted = config_encryption(user_configuration, omarchy_install)
+
+    if encrypted is None:
+        return bool(flag)
+    if flag is not None and flag != encrypted:
+        info(
+            f"warning: user_encrypt_installation.txt says {str(flag).lower()} but the install "
+            f"configuration is {'encrypted' if encrypted else 'not encrypted'}; following the configuration"
+        )
+    return encrypted
 
 
 def _strip_account_fields(arch_configuration: dict) -> None:

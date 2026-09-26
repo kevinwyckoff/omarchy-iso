@@ -324,6 +324,35 @@ Keyboard,$keyboard" |
 
 # STEP 3: DISK
 
+# Portable chassis types from the SMBIOS spec: laptop, notebook, hand held,
+# sub notebook, tablet, convertible, detachable.
+is_portable_chassis() {
+  local chassis
+  chassis=$(cat "${DMI_CHASSIS_TYPE:-/sys/class/dmi/id/chassis_type}" 2>/dev/null) || return 1
+  [[ " 8 9 10 14 30 31 32 " == *" $chassis "* ]]
+}
+
+# Encryption is the default, and choosing an unencrypted install is a visible
+# choice rather than a Ctrl+C on the confirm screen. Sets encrypt_installation.
+# Returns 1 to go back.
+encryption_form() {
+  local choice
+
+  step "Let's choose disk encryption..."
+  say "Encrypted: you type your password at boot; protects the disk if it's lost."
+  say --foreground 8 "Not encrypted: for servers, VMs, or machines whose data lives elsewhere."
+  echo
+
+  choice=$(gum choose --header "Disk encryption" --selected "Encrypted (recommended)" \
+    "Encrypted (recommended)" "Not encrypted") || return 1
+
+  if [[ $choice == "Not encrypted" ]]; then
+    encrypt_installation=false
+  else
+    encrypt_installation=true
+  fi
+}
+
 # The last-chance summary shared by every install path: what dies, what is
 # kept, the drives left alone, and what gets created. Busy partitions on the
 # target come last, in red. Pass free_space mode its partition bounds.
@@ -341,6 +370,11 @@ show_install_summary() {
     awk -v pad="$PADDING_LEFT_SPACES" -v full="$mode" '
       NR == 1 && full == "full_disk" { printf "%s\033[1;31m%s\033[0m\n", pad, $0; next }
       { print pad $0 }'
+
+  if [[ $encrypt == "false" ]] && is_portable_chassis; then
+    echo
+    say --foreground 3 "This looks like a laptop. If it's lost or stolen, anyone can read the disk."
+  fi
 
   if [[ $mode == "full_disk" ]]; then
     while IFS=$'\t' read -r part where; do
@@ -364,7 +398,7 @@ release_busy_disk() {
 
 # The typed confirmation for a disk with anything on it: the user types the
 # kernel name, which makes them read which drive this is. Returns 0 to go
-# ahead, 1 on Esc, and 130 on Ctrl+C.
+# ahead, non-zero (Esc or Ctrl+C) to go back.
 confirm_by_typing_disk_name() {
   local name="${disk##*/}" answer status
 
@@ -464,14 +498,16 @@ disk_abort_hook() {
   abort "$1"
 }
 
-# Save the configurator answers the installer consumes: git identity and
-# encryption choice as plain files, account details as archinstall credentials.
+# Save the configurator answers the installer consumes: git identity as plain
+# files, account details as archinstall credentials. Whether to encrypt is not
+# saved separately: the installer reads it from user_configuration.json, so the
+# choice and the installed disk can't disagree.
 # Deferred-provisioning installs defer the user to first boot: no credentials, and on encrypted
 # targets the orchestrator generates a throwaway LUKS passphrase itself.
 write_user_files() {
   echo "$full_name" >user_full_name.txt
   echo "$email_address" >user_email_address.txt
-  printf '%s\n' "$encrypt_installation" >user_encrypt_installation.txt
+  rm -f user_encrypt_installation.txt
 
   if $defer_provisioning; then
     cat <<-_EOF_ >user_credentials.json
@@ -523,9 +559,9 @@ print_dry_run_files() {
   cat user_email_address.txt
 
   echo -e "\nDisk Encryption:"
-  cat user_encrypt_installation.txt
+  echo "$encrypt_installation"
 
-  rm -f user_configuration.json user_credentials.json user_full_name.txt user_email_address.txt user_encrypt_installation.txt
+  rm -f user_configuration.json user_credentials.json user_full_name.txt user_email_address.txt
 }
 
 # Shared error screen for every "can't fit Omarchy here" outcome of the
@@ -640,53 +676,16 @@ run_partition_decide() {
     return $?
   fi
 
-  # Default to encrypted and hide the unencrypted path behind Ctrl+C,
-  # matching the full-disk flow. The dedicated Omarchy ESP always supports
-  # LUKS, so encryption is always on the table here. Nothing is erased, so the
-  # summary is confirmed with a plain Yes/No. Re-read the disk first: the user
-  # may have just made this free space in the partition tool.
-  local mode="encrypted" encrypt affirmative confirm_status
+  # The dedicated Omarchy ESP always supports LUKS, so encryption is always on
+  # the table here. Nothing is erased, so the summary is confirmed with a plain
+  # Yes/No. Re-read the disk first: the user may have just made this free space
+  # in the partition tool.
+  encryption_form || return 1
   disk_inventory_refresh
   disk_probe_all
-
-  while true; do
-    [[ $mode == "encrypted" ]] && encrypt=true || encrypt=false
-    show_install_summary free_space "$encrypt" "$EFI_START_B" "$EFI_END_B" "$ROOT_START_B" "$ROOT_END_B"
-
-    case $mode in
-      encrypted)
-        say --foreground 8 "Press Ctrl+C for unencrypted install."
-        affirmative="Yes, install"
-        ;;
-      unencrypted)
-        affirmative="Yes, install without encryption"
-        ;;
-    esac
-    echo
-
-    gum confirm --affirmative "$affirmative" --negative "No, change it" \
-      "Install Omarchy in the free space on $disk?"
-    confirm_status=$?
-
-    case $confirm_status in
-      0)
-        encrypt_installation=$encrypt
-        break
-        ;;
-      1)
-        return 1
-        ;;
-      130)
-        case $mode in
-          encrypted) mode="unencrypted" ;;
-          unencrypted) mode="encrypted" ;;
-        esac
-        ;;
-      *)
-        abort
-        ;;
-    esac
-  done
+  show_install_summary free_space "$encrypt_installation" "$EFI_START_B" "$EFI_END_B" "$ROOT_START_B" "$ROOT_END_B"
+  gum confirm --affirmative "Yes, install" --negative "No, change it" \
+    "Install Omarchy in the free space on $disk?" || return 1
 
   if [[ "$encrypt_installation" == "true" ]]; then
     esp_mount_in_target=/boot
@@ -987,49 +986,22 @@ install_mode_form() {
 
 # The full-disk wipe confirmation, on the last-chance summary. A disk with any
 # signature on it needs its name typed; a blank one gets a plain Yes/No.
-# Ctrl+C still toggles an unencrypted install. Returns 1 to go back.
+# Returns 1 to go back.
 confirm_disk_overwrite() {
-  local mode="encrypted" encrypt confirm_status
-
   while true; do
-    [[ $mode == "encrypted" ]] && encrypt=true || encrypt=false
-    show_install_summary full_disk "$encrypt"
+    show_install_summary full_disk "$encrypt_installation"
 
     if [[ -n $(disk_busy_partitions "$disk") ]]; then
       release_busy_disk || return 1
       continue
     fi
 
-    if [[ $mode == "encrypted" ]]; then
-      say --foreground 8 "Press Ctrl+C for unencrypted install."
-    else
-      say --foreground 8 "Installing without encryption. Press Ctrl+C to encrypt."
-    fi
-    echo
-
     if disk_has_signatures "$disk"; then
-      confirm_by_typing_disk_name
-      confirm_status=$?
+      confirm_by_typing_disk_name || return 1
     else
-      gum confirm --affirmative "Yes, install" --negative "No, change it" "$disk is blank. Install Omarchy on it?"
-      confirm_status=$?
+      gum confirm --affirmative "Yes, install" --negative "No, change it" "$disk is blank. Install Omarchy on it?" || return 1
     fi
-
-    case $confirm_status in
-      0)
-        encrypt_installation=$encrypt
-        return 0
-        ;;
-      1)
-        return 1
-        ;;
-      130)
-        [[ $mode == "encrypted" ]] && mode="unencrypted" || mode="encrypted"
-        ;;
-      *)
-        abort
-        ;;
-    esac
+    return 0
   done
 }
 
@@ -1058,7 +1030,7 @@ select_installation() {
 
     case "$install_mode" in
       "Full disk install")
-        if confirm_disk_overwrite; then
+        if encryption_form && confirm_disk_overwrite; then
           install_target="full_disk"
           return 0
         fi
@@ -1115,10 +1087,10 @@ if $defer_provisioning; then
   hostname="omarchy"
   timezone="UTC"
 
-  # Jump straight to disk selection + overwrite confirmation (encrypted by
-  # default, Ctrl+C toggles unencrypted). deferred provisioning is always a full-disk install.
+  # Jump straight to disk selection, the encryption choice and the overwrite
+  # confirmation. deferred provisioning is always a full-disk install.
   disk_form
-  until confirm_disk_overwrite; do
+  until encryption_form && confirm_disk_overwrite; do
     disk_form
   done
   install_target="full_disk"

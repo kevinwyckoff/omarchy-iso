@@ -1647,6 +1647,15 @@ def _tailscale_authkey(path: Path) -> str:
 # the user.
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _assert_cryptdevice_matches(encrypt: bool, limine_conf: Path, limine_conf_text: str) -> None:
+    """Both directions: an encrypted root must be unlocked at boot, and an
+    unencrypted one must not wait for a LUKS device that isn't there."""
+    if encrypt and "cryptdevice=" not in limine_conf_text:
+        raise RuntimeError(f"Encrypted install but {limine_conf} has no cryptdevice=")
+    if not encrypt and "cryptdevice=" in limine_conf_text:
+        raise RuntimeError(f"Unencrypted install but {limine_conf} has cryptdevice=")
+
+
 def validate_boot(ctx: InstallContext) -> None:
     _assert_boot_hooks_restored(ctx)
     _validate_kernel_headers(ctx)
@@ -1662,8 +1671,7 @@ def validate_boot(ctx: InstallContext) -> None:
     if "Omarchy" not in limine_conf_text:
         raise RuntimeError(f"{limine_conf} has no Omarchy entry")
 
-    if ctx.encrypt and "cryptdevice=" not in limine_conf_text:
-        raise RuntimeError(f"Encrypted install but {limine_conf} has no cryptdevice=")
+    _assert_cryptdevice_matches(ctx.encrypt, limine_conf, limine_conf_text)
 
     kernel_cmdline = ctx.target / "etc" / "kernel" / "cmdline"
     if not kernel_cmdline.exists():
