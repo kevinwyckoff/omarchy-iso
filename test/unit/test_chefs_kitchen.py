@@ -340,6 +340,11 @@ class CompileTest(unittest.TestCase):
         self.assertNotIn("encryption_password", configuration["disk_config"]["disk_encryption"])
         self.assertEqual(compile_archinstall.credentials(config, self.secrets), {"users": []})
 
+    def test_the_swap_strategy_reaches_the_orchestrator(self):
+        self.assertEqual(self.compile()["omarchy_install"]["swap"], {"strategy": "zram+hibernate"})
+        config, _ = parse(minimal(swap={"strategy": "none"}))
+        self.assertEqual(self.compile(config)["omarchy_install"]["swap"], {"strategy": "none"})
+
     def test_credentials(self):
         creds = compile_archinstall.credentials(self.config, self.secrets)
         self.assertEqual(creds["encryption_password"], "hunter2")
@@ -481,6 +486,12 @@ class PlanTest(unittest.TestCase):
     def test_interactive_installs_ask_instead(self):
         self.assertTrue(self.make(self.unattended_config(), unattended=False).ok)
 
+    def test_every_swap_strategy_can_install(self):
+        for strategy in ("zram+hibernate", "zram", "none"):
+            data = self.unattended_config(on_existing_data="wipe")
+            data["swap"] = {"strategy": strategy}
+            self.assertTrue(self.make(data).ok, strategy)
+
     def test_wipe_goes_ahead(self):
         self.assertTrue(self.make(self.unattended_config(on_existing_data="wipe")).ok)
 
@@ -610,7 +621,7 @@ class PlanTest(unittest.TestCase):
                       str(result.errors[0]))
 
     def test_knobs_this_iso_can_not_install_yet(self):
-        for extra in ({"swap": {"strategy": "zram"}}, {"desktop": {"theme": "nord"}}):
+        for extra in ({"desktop": {"theme": "nord"}}, {"packages": {"extra": ["firefox"]}}):
             data = self.unattended_config(on_existing_data="wipe")
             data.update(extra)
             self.assertIn("not supported by this ISO yet", str(self.make(data).errors[0]))

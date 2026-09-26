@@ -615,7 +615,9 @@ render_wipe_summary() {
   _disk_created_row "$esp_num" "$(human_size "$esp_b")" "vfat" "$esp_mount"
   _disk_created_row "$root_num" "$(human_size "$root_b")" "$root_desc" "/  (@, @home, @log, @pkg)"
   ram=$(_disk_ram_bytes)
-  if [[ -n $ram ]]; then
-    _disk_truncate "      with zram and a $(human_size "$ram") hibernation swapfile" "$width"
-  fi
+  case ${DISK_INSPECT_SWAP_STRATEGY:-zram+hibernate} in
+    zram) echo "      with zram swap, and no hibernation swapfile" ;;
+    none) echo "      with no swap" ;;
+    *) [[ -n $ram ]] && _disk_truncate "      with zram and a $(human_size "$ram") hibernation swapfile" "$width" ;;
+  esac
 }

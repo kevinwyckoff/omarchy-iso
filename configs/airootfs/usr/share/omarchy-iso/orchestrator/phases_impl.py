@@ -934,13 +934,36 @@ def _split_partition_device(part_dev: str) -> tuple[str, int]:
     return f"/dev/{parent}", int(part_num)
 
 
+def _swap_strategy(ctx: InstallContext) -> str:
+    """"zram+hibernate" (the default), "zram" or "none", from install.toml's
+    [swap] strategy by way of omarchy_install.swap."""
+    return (ctx.omarchy_install.get("swap") or {}).get("strategy", "zram+hibernate")
+
+
 def configure_hibernation(ctx: InstallContext) -> None:
     """Configure swap/resume in the target as root before user setup.
 
     Hibernation is system boot configuration, not per-user setup. The final
     Limine UKI build still happens later in finalize_limine_boot after this
     writes the resume hook and kernel cmdline drop-in.
+
+    swap.strategy "zram" skips it: no swapfile and no resume=. "none" also
+    turns zram off, with an /etc drop-in that outranks the one omarchy-settings
+    ships in /usr/lib and survives its upgrades.
     """
+    strategy = _swap_strategy(ctx)
+    if strategy == "none":
+        dropin = ctx.target / "etc" / "systemd" / "zram-generator.conf.d" / "99-chefs-kitchen-swap.conf"
+        dropin.parent.mkdir(parents=True, exist_ok=True)
+        dropin.write_text(
+            "# swap.strategy = \"none\" in /etc/chefs-kitchen/install.toml: no zram device.\n"
+            "[zram0]\n"
+            "zram-size = 0\n"
+        )
+    if strategy != "zram+hibernate":
+        info(f"› swap.strategy = {strategy}: no hibernation swapfile")
+        return
+
     setup = ctx.target / "usr" / "bin" / "omarchy-hibernation-setup"
     if not setup.exists():
         _debug_log(ctx, "skipping hibernation: /usr/bin/omarchy-hibernation-setup is not installed")

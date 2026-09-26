@@ -148,6 +148,7 @@ def full_disk_configuration(
                 "enable_fallback": True,
             },
             "storage": {"kernel": kernel},
+            "swap": {"strategy": config.swap_strategy},
         },
         "disk_config": disk_config,
         "hostname": config.hostname,
