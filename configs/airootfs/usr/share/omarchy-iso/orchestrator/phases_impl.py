@@ -1647,6 +1647,19 @@ def _tailscale_authkey(path: Path) -> str:
 # the user.
 # ─────────────────────────────────────────────────────────────────────────────
 
+def record_install_toml(ctx: InstallContext) -> None:
+    """Keep the install.toml this machine was installed from, secrets already
+    stripped by chefs-kitchen, at /etc/chefs-kitchen/install.toml. Wizard
+    installs have one too; legacy cidata installs don't."""
+    if ctx.install_toml_path is None:
+        return
+    dest = ctx.target / "etc" / "chefs-kitchen" / "install.toml"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(ctx.install_toml_path, dest)
+    dest.chmod(0o644)
+    info(f"› recorded {dest.relative_to(ctx.target).as_posix()}")
+
+
 def _assert_cryptdevice_matches(encrypt: bool, limine_conf: Path, limine_conf_text: str) -> None:
     """Both directions: an encrypted root must be unlocked at boot, and an
     unencrypted one must not wait for a LUKS device that isn't there."""

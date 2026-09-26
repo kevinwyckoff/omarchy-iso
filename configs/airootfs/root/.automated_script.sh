@@ -91,41 +91,35 @@ warm_pid=$!
 trap 'kill "$warm_pid" 2>/dev/null' EXIT
 
 cd /root
-# Autoinstall: a cidata drive carrying the configurator's own output files
-# stands in for the wizard. omarchy-cidata-load copies them into /root and
-# everything downstream runs the ordinary path against ordinary inputs.
-if /usr/local/bin/omarchy-cidata-load; then
-  echo "Autoinstall configuration found on cidata drive; skipping the configurator."
-  export OMARCHY_UI_INTERACTIVE=no
-else
-  ./configurator
-fi
+# Autoinstall: a cidata drive stands in for the wizard. omarchy-cidata-load
+# exits 0 for a legacy drive carrying the configurator's own output files
+# (copied into /root, so everything downstream runs the ordinary path), 10 for
+# a drive carrying install.toml (copied into /root/cidata, then compiled by
+# chefs-kitchen), and anything else when there is no usable drive.
+cidata_status=0
+/usr/local/bin/omarchy-cidata-load || cidata_status=$?
 
-# Deferred-provisioning installs skip the celebration/reboot prompt and reboot on
-# their own — the owner completes setup at first boot. Signalled by the config's
-# defer_provisioning flag (interactive) or the defer-provisioning marker (cidata).
-# Parse the flag with jq (the same JSON semantics the orchestrator uses) rather
-# than a line regex, so a reformatted config can't read as a direct install.
-if [[ -f /root/defer-provisioning ]] ||
-  [[ "$(jq -r '.omarchy_install.defer_provisioning // false' /root/user_configuration.json 2>/dev/null)" == "true" ]]; then
-  export OMARCHY_UI_DEFER_PROVISIONING=yes
-fi
+case $cidata_status in
+  0)
+    echo "Autoinstall configuration found on cidata drive; skipping the configurator."
+    export OMARCHY_UI_INTERACTIVE=no
+    ;;
+  10)
+    echo "install.toml found on cidata drive; skipping the configurator."
+    # chefs-kitchen prints the wipe summary, and the reason it stops if it
+    # does, to this console and the install log. On success it has written the
+    # installer's inputs to /root, and the install starts below.
+    /usr/local/bin/chefs-kitchen install --config /root/cidata/install.toml --yes --no-launch || {
+      echo
+      echo "The install.toml on the cidata drive was not installed, for the reason above."
+      echo "Fix it or remove the drive (the wizard runs then), and run: ./.automated_script.sh"
+      exit 1
+    }
+    export OMARCHY_UI_INTERACTIVE=no
+    ;;
+  *)
+    ./configurator
+    ;;
+esac
 
-# The foreground dashboard is now the sole visible install UI owner. It starts
-# the actual installer as a non-interactive child, logs child output, waits for
-# completion, then renders the final installed-time/reboot prompt itself.
-export OMARCHY_DASHBOARD_TTY="$(tty)"
-rm -f /run/omarchy-install/state.json
-/usr/local/bin/omarchy-install-dashboard \
-  "$OMARCHY_INSTALL_LOG_FILE" \
-  /run/omarchy-install/state.json \
-  -- \
-  /usr/local/bin/omarchy-iso-install \
-    --config /root/user_configuration.json \
-    --creds /root/user_credentials.json \
-    --full-name-file /root/user_full_name.txt \
-    --email-file /root/user_email_address.txt \
-    --encrypt-file /root/user_encrypt_installation.txt \
-    --authorized-keys-file /root/authorized_keys \
-    --tailscale-authkey-file /root/tailscale_authkey \
-    --defer-provisioning-file /root/defer-provisioning
+/usr/local/bin/omarchy-iso-run

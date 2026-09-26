@@ -413,28 +413,6 @@ confirm_by_typing_disk_name() {
   done
 }
 
-get_root_disk() {
-  local device="$1"
-  local parent
-
-  [[ -n $device ]] || return 1
-
-  # /run/archiso/bootmnt usually resolves to the boot partition, but the
-  # installer picker works with whole disks. Walk back to the parent disk so
-  # the install media itself never shows up as a wipe target.
-  device=$(readlink -f "$device" 2>/dev/null || printf "%s\n" "$device")
-
-  while true; do
-    parent=$(lsblk -dno PKNAME "$device" 2>/dev/null | tail -n1)
-    [[ -n $parent ]] || break
-    device="/dev/$parent"
-  done
-
-  if [[ $(lsblk -dno TYPE "$device" 2>/dev/null) == "disk" ]]; then
-    printf "%s\n" "$device"
-  fi
-}
-
 # partition_path lives in disk-partitioning.sh alongside the creation helpers.
 
 # BitLocker writes the "-FVE-FS-" signature at offset 3 of the partition.
@@ -507,7 +485,7 @@ disk_abort_hook() {
 write_user_files() {
   echo "$full_name" >user_full_name.txt
   echo "$email_address" >user_email_address.txt
-  rm -f user_encrypt_installation.txt
+  rm -f user_encrypt_installation.txt install.stripped.toml
 
   if $defer_provisioning; then
     cat <<-_EOF_ >user_credentials.json
@@ -893,12 +871,11 @@ _EOF_
 }
 
 disk_form() {
-  local boot_source selected_display
+  local selected_display
   local -a options
 
-  # Don't offer the install media as an option (Arch ISO mounts it here)
-  boot_source=$(findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null || true)
-  DISK_INSPECT_INSTALL_MEDIUM=$(get_root_disk "$boot_source")
+  # Don't offer the install media as an option.
+  DISK_INSPECT_INSTALL_MEDIUM=$(disk_install_medium)
 
   while true; do
     step "Let's select where to install Omarchy..."

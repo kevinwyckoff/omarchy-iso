@@ -27,6 +27,27 @@ DISK_INSPECT_MEMINFO="${DISK_INSPECT_MEMINFO:-/proc/meminfo}"
 # never offers it and the summary labels it.
 DISK_INSPECT_INSTALL_MEDIUM="${DISK_INSPECT_INSTALL_MEDIUM:-}"
 
+# The whole disk the live system booted from. Arch's ISO mounts its boot
+# partition at /run/archiso/bootmnt; walk from that partition back to its disk
+# so the install medium itself is never a wipe target.
+disk_install_medium() {
+  local device parent
+
+  device=$(findmnt -no SOURCE "${DISK_INSPECT_BOOTMNT:-/run/archiso/bootmnt}" 2>/dev/null) || return 0
+  [[ -n $device ]] || return 0
+  device=$(readlink -f "$device" 2>/dev/null || printf "%s\n" "$device")
+
+  while true; do
+    parent=$(lsblk -dno PKNAME "$device" 2>/dev/null | tail -n1)
+    [[ -n $parent ]] || break
+    device="/dev/$parent"
+  done
+
+  if [[ $(lsblk -dno TYPE "$device" 2>/dev/null) == "disk" ]]; then
+    printf "%s\n" "$device"
+  fi
+}
+
 disk_inventory_json=""
 
 # What each partition holds, keyed by partition path. Filled by disk_probe(),

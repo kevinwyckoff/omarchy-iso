@@ -222,3 +222,41 @@ mkdir "$sandbox/root/user_credentials.json"
 [[ ! -e $sandbox/root/user_configuration.json ]] || fail "partial copy removes what it copied"
 [[ ! -e $sandbox/root/authorized_keys ]] || fail "partial copy leaves no authorized_keys behind"
 pass "partial copy cleans up what it copied"
+
+# A drive carrying install.toml is copied whole into /root/cidata, private,
+# for chefs-kitchen to compile: the TOML names its secret files relative to
+# itself. Exit 10 tells the caller which kind of drive it was.
+new_sandbox
+attach_drive cidata
+echo 'schema = 1' >"$sandbox/media/install.toml"
+echo 'hunter2' >"$sandbox/media/kevin.pass"
+status=0
+run_load || status=$?
+[[ $status == 10 ]] || fail "install.toml drive exits 10" "exit status was $status"
+[[ -f $sandbox/root/cidata/install.toml && -f $sandbox/root/cidata/kevin.pass ]] || fail "install.toml drive copies the TOML and its files"
+[[ $(stat -c %a "$sandbox/root/cidata") == 700 ]] || fail "the copied drive is private to root"
+grep -q '^umount ' "$TEST_LOG" || fail "install.toml drive unmounts"
+pass "install.toml drive is copied into /root/cidata and exits 10"
+
+# install.toml takes precedence over the legacy pair on the same drive.
+new_sandbox
+attach_drive cidata
+write_required_pair
+echo 'schema = 1' >"$sandbox/media/install.toml"
+status=0
+run_load || status=$?
+[[ $status == 10 ]] || fail "install.toml wins over the legacy pair" "exit status was $status"
+[[ ! -e $sandbox/root/user_configuration.json ]] || fail "the legacy pair is not loaded when install.toml is present"
+pass "install.toml takes precedence over the legacy pair"
+
+# A copy left by an earlier install.toml load doesn't survive into a legacy
+# drive's install.
+new_sandbox
+attach_drive cidata
+write_required_pair
+mkdir -p "$sandbox/root/cidata"
+echo 'schema = 1' >"$sandbox/root/cidata/install.toml"
+echo 'schema = 1' >"$sandbox/root/install.stripped.toml"
+run_load || fail "legacy drive after an install.toml load loads"
+[[ ! -e $sandbox/root/cidata && ! -e $sandbox/root/install.stripped.toml ]] || fail "stale install.toml inputs are cleared"
+pass "stale install.toml inputs are cleared before a legacy load"
