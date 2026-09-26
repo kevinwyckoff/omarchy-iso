@@ -121,8 +121,6 @@ def make_plan(config: InstallConfig, unattended: bool, width: int = 100) -> Plan
         refuse("disk.mode", f'"free-space" {_NOT_YET}')
     if config.home_location == "disk":
         refuse("disk.home.location", f'"disk" {_NOT_YET}')
-    if config.swap_strategy != "zram+hibernate":
-        refuse("swap.strategy", f"{config.swap_strategy!r} {_NOT_YET}")
     if config.theme:
         refuse("desktop.theme", _NOT_YET)
     if config.agent:
@@ -166,7 +164,7 @@ def make_plan(config: InstallConfig, unattended: bool, width: int = 100) -> Plan
         plan.issues.append(Issue("disk.target", f"{{ path = ... }} can name a different disk after a reboot or re-cabling; on real hardware prefer serial, by_id or wwn", "warning"))
 
     target = DiskPlan(disk, fingerprint(disk, devices), helpers.has_signatures(disk))
-    target.summary = helpers.wipe_summary(disk, config.encryption_enabled, width, medium)
+    target.summary = helpers.wipe_summary(disk, config.encryption_enabled, width, medium, config.swap_strategy)
     plan.target = target
 
     if config.expect_fingerprint and config.expect_fingerprint != target.fingerprint:

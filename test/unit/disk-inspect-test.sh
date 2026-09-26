@@ -159,6 +159,11 @@ check_contains "swap matches RAM" "with zram and a 15.6 GiB hibernation swapfile
 check_width "fits 80 columns" 80 "$summary"
 check_width "fits 64 columns" 64 "$(render_wipe_summary /dev/nvme1n1 full_disk true 64)"
 
+check_contains "zram without hibernation says so" "with zram swap, and no hibernation swapfile" \
+  "$(DISK_INSPECT_SWAP_STRATEGY=zram render_wipe_summary /dev/nvme1n1 full_disk true 80)"
+check_contains "no swap says so" "with no swap" \
+  "$(DISK_INSPECT_SWAP_STRATEGY=none render_wipe_summary /dev/nvme1n1 full_disk true 80)"
+
 plain=$(render_wipe_summary /dev/nvme1n1 full_disk false 80)
 check_absent "unencrypted root has no LUKS" "LUKS2 →" "$plain"
 check_contains "unencrypted root is btrfs" "btrfs           /  (@, @home, @log, @pkg)" "$plain"

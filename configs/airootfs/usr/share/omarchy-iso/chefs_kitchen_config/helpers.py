@@ -27,12 +27,12 @@ def bash(script: str, snippet: str, *args: str, env: dict[str, str] | None = Non
     return result.stdout
 
 
-def disk_inspect(snippet: str, *args: str, install_medium: str = "", check: bool = True) -> str:
+def disk_inspect(snippet: str, *args: str, install_medium: str = "", check: bool = True, env: dict | None = None) -> str:
     return bash(
         "disk-inspect.sh",
         f"disk_inventory_refresh; {snippet}",
         *args,
-        env={"DISK_INSPECT_INSTALL_MEDIUM": install_medium},
+        env={"DISK_INSPECT_INSTALL_MEDIUM": install_medium, **(env or {})},
         check=check,
     )
 
@@ -57,11 +57,12 @@ def busy_partitions(disk: str) -> list[str]:
     return [line for line in disk_inspect('disk_busy_partitions "$1"', disk).splitlines() if line]
 
 
-def wipe_summary(disk: str, encrypt: bool, width: int, medium: str) -> str:
+def wipe_summary(disk: str, encrypt: bool, width: int, medium: str, swap_strategy: str = "zram+hibernate") -> str:
     return disk_inspect(
         'disk_probe_all; render_wipe_summary "$1" full_disk "$2" "$3"',
         disk, "true" if encrypt else "false", str(width),
         install_medium=medium,
+        env={"DISK_INSPECT_SWAP_STRATEGY": swap_strategy},
     )
 
 
