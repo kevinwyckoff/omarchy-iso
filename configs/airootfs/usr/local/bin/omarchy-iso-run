@@ -1,0 +1,41 @@
+#!/bin/bash
+#
+# Start the install from the inputs in /root: the wizard's, a legacy cidata
+# drive's, or the ones chefs-kitchen install compiled from install.toml. The
+# foreground dashboard is the sole visible install UI owner. It starts the
+# actual installer as a non-interactive child, logs child output, waits for
+# completion, then renders the final installed-time/reboot prompt itself.
+#
+# .automated_script.sh has already set up the environment and install log on
+# tty1; the defaults below cover running this from another console.
+
+set -euo pipefail
+
+export OMARCHY_INSTALL_LOG_FILE=${OMARCHY_INSTALL_LOG_FILE:-/var/log/omarchy-install.log}
+
+# Deferred-provisioning installs skip the celebration/reboot prompt and reboot on
+# their own — the owner completes setup at first boot. Signalled by the config's
+# defer_provisioning flag (interactive) or the defer-provisioning marker (cidata).
+# Parse the flag with jq (the same JSON semantics the orchestrator uses) rather
+# than a line regex, so a reformatted config can't read as a direct install.
+if [[ -f /root/defer-provisioning ]] ||
+  [[ "$(jq -r '.omarchy_install.defer_provisioning // false' /root/user_configuration.json 2>/dev/null)" == "true" ]]; then
+  export OMARCHY_UI_DEFER_PROVISIONING=yes
+fi
+
+export OMARCHY_DASHBOARD_TTY="$(tty)"
+rm -f /run/omarchy-install/state.json
+exec /usr/local/bin/omarchy-install-dashboard \
+  "$OMARCHY_INSTALL_LOG_FILE" \
+  /run/omarchy-install/state.json \
+  -- \
+  /usr/local/bin/omarchy-iso-install \
+    --config /root/user_configuration.json \
+    --creds /root/user_credentials.json \
+    --full-name-file /root/user_full_name.txt \
+    --email-file /root/user_email_address.txt \
+    --encrypt-file /root/user_encrypt_installation.txt \
+    --authorized-keys-file /root/authorized_keys \
+    --tailscale-authkey-file /root/tailscale_authkey \
+    --defer-provisioning-file /root/defer-provisioning \
+    --install-toml-file /root/install.stripped.toml

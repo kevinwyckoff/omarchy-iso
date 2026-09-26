@@ -1,0 +1,7 @@
+#!/bin/bash
+#
+# Chefs Kitchen: validate, plan and install Omarchy from install.toml.
+# The implementation is the chefs_kitchen_config Python package next to the
+# orchestrator; see its schema.py for the file format.
+
+exec env PYTHONPATH=/usr/share/omarchy-iso${PYTHONPATH:+:$PYTHONPATH} python -m chefs_kitchen_config "$@"

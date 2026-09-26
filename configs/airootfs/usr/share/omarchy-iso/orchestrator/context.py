@@ -29,6 +29,9 @@ class InstallContext:
     arch_config_path: Path
     omarchy_install: dict[str, Any]
     defer_provisioning: bool = False
+    # The install.toml this install was compiled from, secrets stripped, when
+    # chefs-kitchen started it. Recorded on the target for reference.
+    install_toml_path: Path | None = None
 
     target: Path = Path("/mnt")
     omarchy_path: Path = Path("/usr/share/omarchy")
@@ -125,6 +128,7 @@ class InstallContext:
             arch_config_path=arch_config_path,
             omarchy_install=omarchy_install,
             defer_provisioning=defer_provisioning,
+            install_toml_path=_optional_path(os.environ.get("OMARCHY_INSTALL_TOML_FILE")),
             state_dir=state_dir,
         )
         disk_config = user_configuration.get("disk_config", {})

@@ -34,6 +34,46 @@ The shipped ISO installs itself with no keyboard when it finds its configuration
 
 `cidata` is the cloud-init `NoCloud` label, so Proxmox, libvirt, and Packer already know how to attach one.
 
+### install.toml
+
+A drive carrying `install.toml` describes the whole install in one file, and takes precedence over the legacy files below. `chefs-kitchen` checks it, resolves it against the machine, and installs it:
+
+```bash
+chefs-kitchen validate install.toml                  # schema and semantic checks, no hardware access
+chefs-kitchen plan --config install.toml --yes       # resolve the disk and print what would be erased; touches nothing
+chefs-kitchen install --config install.toml          # shows the wipe summary and asks before erasing
+chefs-kitchen install --config install.toml --yes    # unattended: what the ISO runs for a cidata drive
+```
+
+```toml
+schema = 1
+
+[system]
+hostname = "marvin"
+timezone = "America/Toronto"
+keyboard = "us"
+
+[[users]]
+name     = "kevin"
+password = { file = "kevin.pass" }             # or password_hash = "$6$…" (openssl passwd -6)
+ssh_authorized_keys = []
+
+[disk]
+target = { serial = "S69ENX0T812345" }         # or { by_id = "…" }, { wwn = "…" }, { path = "/dev/vda" }
+on_existing_data = "abort"                     # "wipe" to erase a disk that has anything on it
+# expect_fingerprint = "sha256:…"              # wipe only if the disk still looks like this
+
+[encryption]
+enabled    = true
+passphrase = { same_as_user = "kevin" }        # or { file = "luks.pass" }, { prompt = true }
+```
+
+- **Secrets are never plain strings.** Passwords, passphrases and auth keys are `{ file = "…" }` (relative to `install.toml`), `{ prompt = true }` for interactive installs, or `{ insecure_plaintext = "…" }`, which warns every time. Unknown keys are errors, so a typo can't be silently ignored.
+- **The disk is named by something stable.** Its serial, `/dev/disk/by-id` name or WWN. `{ path = … }` is fine in a VM.
+- **Unattended installs never erase data by default.** With `--yes`, a disk with any signature on it stops the install unless `on_existing_data = "wipe"`. `chefs-kitchen plan` prints the disk's fingerprint for `expect_fingerprint`, which pins the wipe to exactly that layout.
+- **An encrypted unattended install needs the passphrase as a file.** Either `passphrase = { file = … }`, or the user's password as a file with the default `same_as_user`.
+- **The install is recorded.** `/etc/chefs-kitchen/install.toml` on the installed system holds the config it was installed from, with every secret removed.
+
 ### Configuration files
 
 These are the configurator's own output files, so the way to get a starting set is to run one interactive install and copy what it wrote into `/root`.
