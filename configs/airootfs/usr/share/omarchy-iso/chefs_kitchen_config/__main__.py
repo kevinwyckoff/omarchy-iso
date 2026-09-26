@@ -113,6 +113,9 @@ def _confirm(plan: planning.Plan) -> bool:
 def _confirm_disk(target: planning.DiskPlan) -> bool:
     disk = target.path
     name = os.path.basename(disk)
+    if target.region:
+        return _gum("confirm", "--affirmative", "Yes, install", "--negative", "No",
+                    f"Install Omarchy in the free space on {disk}?").returncode == 0
     if not target.has_signatures:
         return _gum("confirm", "--affirmative", "Yes, use it", "--negative", "No",
                     f"{disk} is blank. Use it?").returncode == 0
@@ -166,6 +169,28 @@ def _resolve_secrets(config: InstallConfig) -> compile_archinstall.Secrets | Non
     return secrets
 
 
+def _partition_free_space(plan: planning.Plan, secrets, out: Path):
+    """Partition, format and mount the free region, as the wizard used to."""
+    needs_mklabel, efi_start, efi_end, root_start, root_end = plan.target.region
+    encrypt = plan.config.encryption_enabled
+    result = out / ".free-space-result"
+    out.mkdir(parents=True, exist_ok=True)
+    run = planning.helpers.free_space(
+        'free_space_partition "$@"',
+        plan.target.path, "true" if encrypt else "false", "true" if needs_mklabel else "false",
+        str(efi_start), str(efi_end), str(root_start), str(root_end), str(result),
+        stdin=(secrets.luks_passphrase or "") + "\n" if encrypt else "",
+        check=False,
+    )
+    print(run.stdout, end="")
+    if run.returncode != 0:
+        print(run.stderr, end="")
+        return None
+    mounted = compile_archinstall.PreMounted.from_result_file(result)
+    result.unlink()
+    return mounted
+
+
 def _package_targets() -> tuple[str, str]:
     targets = {}
     if PACKAGE_TARGETS.exists():
@@ -195,10 +220,15 @@ def cmd_install(args: argparse.Namespace) -> int:
     size = int(planning.resolve.device(planning.resolve.inventory(), plan.target.path).get("size") or 0)
     runtime, settings = _package_targets()
     out = Path(args.out)
+    pre_mounted = _partition_free_space(plan, secrets, out) if plan.target.region else None
+    if plan.target.region and pre_mounted is None:
+        print("Not installing.")
+        return 1
     compile_archinstall.write_inputs(
         out, plan.config, plan.target.path, size, secrets,
         compile_archinstall.detect_kernel(), runtime, settings,
         home_disk=plan.home.path if plan.home else None,
+        pre_mounted=pre_mounted,
     )
     print(f"Wrote the installer's inputs to {out}.")
 
@@ -207,6 +237,11 @@ def cmd_install(args: argparse.Namespace) -> int:
     if args.yes:
         os.environ["OMARCHY_UI_INTERACTIVE"] = "no"
     os.execv(LAUNCHER, [LAUNCHER])
+
+
+def cmd_fingerprint(args: argparse.Namespace) -> int:
+    print(planning.fingerprint(args.disk, planning.resolve.inventory()))
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -232,6 +267,11 @@ def main(argv: list[str] | None = None) -> int:
     install.add_argument("--no-launch", action="store_true",
                          help="write the installer's inputs to /root but leave starting the install to the caller")
     install.set_defaults(func=cmd_install)
+
+    # For the wizard: the fingerprint of the disk it just had confirmed.
+    fingerprint = commands.add_parser("fingerprint", help=argparse.SUPPRESS)
+    fingerprint.add_argument("disk")
+    fingerprint.set_defaults(func=cmd_fingerprint)
 
     args = parser.parse_args(argv)
     if args.command == "validate":

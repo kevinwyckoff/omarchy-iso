@@ -33,6 +33,8 @@ class DiskPlan:
     fingerprint: str
     has_signatures: bool
     summary: str = ""
+    # free-space mode: (needs_mklabel, efi_start, efi_end, root_start, root_end)
+    region: tuple | None = None
 
 
 @dataclass
@@ -150,8 +152,6 @@ def make_plan(config: InstallConfig, unattended: bool, width: int = 100) -> Plan
     def refuse(path: str, message: str) -> None:
         plan.issues.append(Issue(path, message))
 
-    if config.mode == "free-space":
-        refuse("disk.mode", f'"free-space" {_NOT_YET}')
     if config.theme:
         refuse("desktop.theme", _NOT_YET)
     if config.agent:
@@ -184,10 +184,30 @@ def make_plan(config: InstallConfig, unattended: bool, width: int = 100) -> Plan
         return plan
 
     target = DiskPlan(disk, fingerprint(disk, devices), helpers.has_signatures(disk))
+    plan.target = target
+
+    if config.mode == "free-space":
+        # Nothing is erased, so on_existing_data has nothing to guard; the
+        # fingerprint still pins the install to the layout that was planned.
+        for part in helpers.bitlocker_partitions(disk):
+            refuse("disk.target", f"{part} is BitLocker-encrypted. Turn BitLocker off in Windows and let the drive "
+                                  "finish decrypting (suspending it is not enough), then try again")
+        region = helpers.free_space_region(disk)
+        if isinstance(region, int):
+            refuse("disk.mode", f"{disk} has {region // 2**30} GiB of usable free space in one piece; "
+                                "Omarchy needs a 2 GiB ESP and 32 GiB")
+        else:
+            target.region = region
+            target.summary = helpers.free_space_summary(
+                disk, config.encryption_enabled, width, medium, region, config.swap_strategy
+            )
+        if config.expect_fingerprint and config.expect_fingerprint != target.fingerprint:
+            refuse("disk.expect_fingerprint", f"{disk} no longer looks like it did: its fingerprint is now {target.fingerprint}")
+        return plan
+
     target.summary = helpers.wipe_summary(
         disk, config.encryption_enabled, width, medium, config.swap_strategy, other_erased=home_disk or ""
     )
-    plan.target = target
 
     if home_disk:
         plan.home = DiskPlan(home_disk, fingerprint(home_disk, devices), helpers.has_signatures(home_disk))

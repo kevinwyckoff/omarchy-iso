@@ -69,5 +69,43 @@ def wipe_summary(
     )
 
 
+def free_space(snippet: str, *args: str, stdin: str | None = None, check: bool = True) -> subprocess.CompletedProcess:
+    """Run a free-space.sh function, with disk-partitioning.sh loaded first."""
+    return subprocess.run(
+        # $0 is disk-partitioning.sh and $1 free-space.sh; shift leaves the arguments.
+        ["bash", "-c", f'source "$0"; source "$1"; shift; {snippet}',
+         str(HELPER_DIR / "disk-partitioning.sh"), str(HELPER_DIR / "free-space.sh"), *args],
+        input=stdin, capture_output=True, text=True, check=check,
+        env={**os.environ, "LC_ALL": "C.UTF-8"},
+    )
+
+
+def free_space_region(disk: str) -> tuple[bool, int, int, int, int] | int:
+    """(needs_mklabel, efi_start, efi_end, root_start, root_end), or the usable
+    bytes found when no region is big enough."""
+    result = free_space('free_space_region "$1"', disk, check=False)
+    fields = result.stdout.split()
+    if result.returncode != 0 or len(fields) != 5:
+        return int(fields[0]) if fields and fields[0].isdigit() else 0
+    return (fields[0] == "true", *map(int, fields[1:]))
+
+
+def bitlocker_partitions(disk: str) -> list[str]:
+    return disk_inspect(
+        'disk_probe "$1"; for p in $(disk_partitions "$1"); do [[ ${disk_contents[$p]:-} == "BitLocker on" ]] && echo "$p"; done; true',
+        disk,
+    ).split()
+
+
+def free_space_summary(disk: str, encrypt: bool, width: int, medium: str, region: tuple, swap_strategy: str) -> str:
+    _, efi_start, efi_end, root_start, root_end = region
+    return disk_inspect(
+        'disk_probe_all; render_wipe_summary "$1" free_space "$2" "$3" "$4" "$5" "$6" "$7"',
+        disk, "true" if encrypt else "false", str(width), str(efi_start), str(efi_end), str(root_start), str(root_end),
+        install_medium=medium,
+        env={"DISK_INSPECT_SWAP_STRATEGY": swap_strategy},
+    )
+
+
 def min_full_disk_bytes() -> int:
     return int(bash("disk-inspect.sh", 'echo "$DISK_INSPECT_MIN_FULL_DISK_B"').strip())
