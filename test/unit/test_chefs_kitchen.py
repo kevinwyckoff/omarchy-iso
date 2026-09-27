@@ -222,13 +222,17 @@ class SchemaTest(unittest.TestCase):
 class ValidateCommandTest(unittest.TestCase):
     """Spec row J: `chefs-kitchen validate` fails and names the key."""
 
-    def run_validate(self, text):
+    def run_validate(self, text, argv=("{path}",)):
+        """validate the text as install.toml, with {path} in argv naming it."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "install.toml"
             path.write_text(textwrap.dedent(text))
             out, err = io.StringIO(), io.StringIO()
             with redirect_stdout(out), redirect_stderr(err):
-                status = cli.main(["validate", str(path)])
+                try:
+                    status = cli.main(["validate", *(arg.format(path=path) for arg in argv)])
+                except SystemExit as exc:  # a usage error, from argparse
+                    status = exc.code
             return status, out.getvalue() + err.getvalue()
 
     BASE = f"""
@@ -267,6 +271,30 @@ class ValidateCommandTest(unittest.TestCase):
         status, output = self.run_validate("schema = = 1")
         self.assertEqual(status, 1)
         self.assertIn("is not valid TOML", output)
+
+    def test_config_names_the_file_as_it_does_for_plan_and_install(self):
+        status, output = self.run_validate(self.BASE, ["--config", "{path}"])
+        self.assertEqual(status, 0, output)
+        self.assertTrue(output.endswith("install.toml: valid\n"), output)
+
+        status, output = self.run_validate(self.BASE + '\n[swap]\nstrategyy = "zram"\n', ["--config", "{path}"])
+        self.assertEqual(status, 1)
+        self.assertIn("swap.strategyy: unknown key", output)
+
+    def test_the_same_file_both_ways_is_one_file(self):
+        status, output = self.run_validate(self.BASE, ["{path}", "--config", "{path.parent}/./{path.name}"])
+        self.assertEqual(status, 0, output)
+
+    def test_two_different_files_is_a_usage_error(self):
+        status, output = self.run_validate(self.BASE, ["{path}", "--config", "{path.parent}/other.toml"])
+        self.assertEqual(status, 2)
+        self.assertIn("two files given", output)
+        self.assertNotRegex(output, r"(?m): (in)?valid$")  # neither file was checked
+
+    def test_no_file_is_a_usage_error(self):
+        status, output = self.run_validate(self.BASE, [])
+        self.assertEqual(status, 2)
+        self.assertIn("give install.toml, as an argument or with --config", output)
 
 
 class CompileTest(unittest.TestCase):
