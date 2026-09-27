@@ -961,7 +961,8 @@ def configure_hibernation(ctx: InstallContext) -> None:
             "zram-size = 0\n"
         )
     if strategy != "zram+hibernate":
-        info(f"› swap.strategy = {strategy}: no hibernation swapfile")
+        zram = "zram turned off" if strategy == "none" else "zram swap"
+        info(f"› swap.strategy = {strategy}: {zram}, no hibernation swapfile")
         return
 
     setup = ctx.target / "usr" / "bin" / "omarchy-hibernation-setup"
