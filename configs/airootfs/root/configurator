@@ -928,7 +928,7 @@ disk_form() {
 
     if disk_is_too_small "$disk"; then
       step "$disk is too small"
-      say --foreground 1 "$disk is $(human_size "$(disk_size_bytes "$disk")"). Omarchy needs at least $(human_size "$DISK_INSPECT_MIN_FULL_DISK_B"): a 2 GiB boot partition and 32 GiB for the system."
+      say --foreground 1 "$disk is $(human_size "$(disk_size_bytes "$disk")"). Omarchy needs at least $(human_size "$DISK_INSPECT_MIN_FULL_DISK_B"), its 2 GiB boot partition included."
       echo
       gum confirm --affirmative "Choose a different disk" --negative "Cancel install" "Pick another disk?" || abort
       continue
