@@ -195,7 +195,7 @@ def make_plan(config: InstallConfig, unattended: bool, width: int = 100) -> Plan
         region = helpers.free_space_region(disk)
         if isinstance(region, int):
             refuse("disk.mode", f"{disk} has {region // 2**30} GiB of usable free space in one piece; "
-                                "Omarchy needs a 2 GiB ESP and 32 GiB")
+                                "Omarchy needs 32 GiB, its own 2 GiB ESP included")
         else:
             target.region = region
             target.summary = helpers.free_space_summary(

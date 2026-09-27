@@ -574,7 +574,7 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(result.target.summary, "OMARCHY WILL USE FREE SPACE\n")
 
     def test_free_space_needs_room(self):
-        self.assertIn("Omarchy needs a 2 GiB ESP and 32 GiB", str(self.free_space(region=20 * 2**30).errors[0]))
+        self.assertIn("Omarchy needs 32 GiB, its own 2 GiB ESP included", str(self.free_space(region=20 * 2**30).errors[0]))
 
     def test_free_space_refuses_bitlocker(self):
         self.assertIn("BitLocker", str(self.free_space(bitlocker=["/dev/sda3"]).errors[0]))
