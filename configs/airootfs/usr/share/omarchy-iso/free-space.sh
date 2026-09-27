@@ -17,8 +17,8 @@ FREE_SPACE_MIN_INSTALL_B=$((32 * 1024 * 1024 * 1024))
 # free_space_region <disk>
 #
 # Prints "<needs_mklabel> <efi_start> <efi_end> <root_start> <root_end>" in
-# bytes for the largest free region, aligned to 1MiB; <root_end> is root's last
-# byte, which is how parted takes a partition's end. When there is no region
+# bytes for the largest free region, aligned to 1MiB; each end is the
+# partition's last byte, which is how parted takes it. When there is no region
 # big enough for 32GiB, the ESP included, prints the usable bytes it did find
 # and returns 1. An unlabeled disk has no partition table for parted to scan,
 # so its whole surface is the region, less a MiB at each end for the GPT, and
@@ -54,11 +54,12 @@ free_space_region() {
   fi
   read -r free_start free_end free_size <<<"$free"
 
-  # A region's end, like parted reports it, is its last byte. Root ends on
-  # the last byte before the region's last MiB boundary, so a gap of exactly
-  # 32GiB holds 32GiB.
+  # A region's end, like parted reports it, is its last byte. The ESP ends on
+  # its own last byte, so it is exactly 2GiB and root starts on the MiB
+  # boundary right after it. Root ends on the last byte before the region's
+  # last MiB boundary, so a gap of exactly 32GiB holds 32GiB.
   efi_start=$(( (free_start + FREE_SPACE_ALIGN_B - 1) / FREE_SPACE_ALIGN_B * FREE_SPACE_ALIGN_B ))
-  efi_end=$((efi_start + FREE_SPACE_EFI_B))
+  efi_end=$((efi_start + FREE_SPACE_EFI_B - 1))
   root_start=$(( (efi_end + 1 + FREE_SPACE_ALIGN_B - 1) / FREE_SPACE_ALIGN_B * FREE_SPACE_ALIGN_B ))
   root_end=$(( (free_end + 1) / FREE_SPACE_ALIGN_B * FREE_SPACE_ALIGN_B - 1 ))
 

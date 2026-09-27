@@ -527,6 +527,8 @@ _disk_render_untouched() {
 #   render_wipe_summary <disk> free_space <encrypt> <width> <esp_start> <esp_end> <root_start> <root_end>
 #   render_wipe_summary <disk> home_disk <encrypt> <width>      (the second disk of a /home-on-its-own-disk install)
 #
+# <esp_end> and <root_end> are last bytes, as free_space_region prints them.
+#
 # Probe the drives first (disk_probe_all) when rendering in a pipeline, or the
 # probes run again in the subshell and their answers are thrown away.
 render_wipe_summary() {
@@ -578,7 +580,7 @@ render_wipe_summary() {
     fi
   else
     echo "Nothing is erased."
-    echo "Free space used: $(human_size $(( $8 - $5 )))"
+    echo "Free space used: $(human_size $(( $8 + 1 - $5 )))"
     if (( ${#table[@]} )); then
       echo
       echo "Kept on this disk:"
@@ -605,8 +607,8 @@ render_wipe_summary() {
     # 1MiB kept free at the end for the backup GPT.
     root_b=$(( $(disk_size_bytes "$disk") / 1048576 * 1048576 - DISK_INSPECT_ESP_B - 2 * 1048576 ))
   else
-    esp_b=$(( $6 - $5 ))
-    root_b=$(( $8 - $7 ))
+    esp_b=$(( $6 + 1 - $5 ))
+    root_b=$(( $8 + 1 - $7 ))
   fi
 
   # The free-space install mounts an unencrypted target's ESP at /efi.
