@@ -17,10 +17,12 @@ FREE_SPACE_MIN_INSTALL_B=$((32 * 1024 * 1024 * 1024))
 # free_space_region <disk>
 #
 # Prints "<needs_mklabel> <efi_start> <efi_end> <root_start> <root_end>" in
-# bytes for the largest free region, aligned to 1MiB. When there is no region
+# bytes for the largest free region, aligned to 1MiB; <root_end> is root's last
+# byte, which is how parted takes a partition's end. When there is no region
 # big enough for 32GiB, the ESP included, prints the usable bytes it did find
 # and returns 1. An unlabeled disk has no partition table for parted to scan,
-# so its whole surface is the region and needs_mklabel is true.
+# so its whole surface is the region, less a MiB at each end for the GPT, and
+# needs_mklabel is true.
 free_space_region() {
   local disk="$1" pt_type size free needs_mklabel=false
   local free_start free_end free_size efi_start efi_end root_start root_end install_max
@@ -30,8 +32,8 @@ free_space_region() {
     size=$(lsblk -bdno SIZE "$disk" 2>/dev/null)
     if [[ -n $size ]] && (( size > 0 )); then
       free_start=$FREE_SPACE_ALIGN_B
-      free_end=$(( (size - FREE_SPACE_ALIGN_B) / FREE_SPACE_ALIGN_B * FREE_SPACE_ALIGN_B ))
-      free="$free_start $free_end $((free_end - free_start))"
+      free_end=$(( (size - FREE_SPACE_ALIGN_B) / FREE_SPACE_ALIGN_B * FREE_SPACE_ALIGN_B - 1 ))
+      free="$free_start $free_end $((free_end - free_start + 1))"
       needs_mklabel=true
     fi
   else
@@ -52,16 +54,19 @@ free_space_region() {
   fi
   read -r free_start free_end free_size <<<"$free"
 
+  # A region's end, like parted reports it, is its last byte. Root ends on
+  # the last byte before the region's last MiB boundary, so a gap of exactly
+  # 32GiB holds 32GiB.
   efi_start=$(( (free_start + FREE_SPACE_ALIGN_B - 1) / FREE_SPACE_ALIGN_B * FREE_SPACE_ALIGN_B ))
   efi_end=$((efi_start + FREE_SPACE_EFI_B))
   root_start=$(( (efi_end + 1 + FREE_SPACE_ALIGN_B - 1) / FREE_SPACE_ALIGN_B * FREE_SPACE_ALIGN_B ))
-  root_end=$((free_end / FREE_SPACE_ALIGN_B * FREE_SPACE_ALIGN_B))
+  root_end=$(( (free_end + 1) / FREE_SPACE_ALIGN_B * FREE_SPACE_ALIGN_B - 1 ))
 
   if (( root_end <= root_start )); then
     echo "$free_size"
     return 1
   fi
-  install_max=$((root_end - efi_start))
+  install_max=$((root_end + 1 - efi_start))
   if (( install_max < FREE_SPACE_MIN_INSTALL_B )); then
     echo "$install_max"
     return 1
