@@ -227,7 +227,7 @@ def arch_install_system(ctx: InstallContext) -> None:
     pre_mounted = arch.is_pre_mount(config)
 
     if not pre_mounted:
-        info("› partitioning + formatting + encrypting")
+        info("› partitioning + formatting + encrypting" if arch.is_encrypted(config) else "› partitioning + formatting")
         arch.perform_filesystem_operations(config)
 
     info("› opening installer context")
@@ -287,8 +287,9 @@ def arch_install_system(ctx: InstallContext) -> None:
             _install_early_packages(installer)
             _configure_limine_boot(ctx, installer, config)
 
-            info("› creating user (with /etc/skel populated)")
+            # Deferred-provisioning installs have no user until first boot.
             if config.auth_config and config.auth_config.users:
+                info("› creating user (with /etc/skel populated)")
                 installer.create_users(config.auth_config.users)
 
             if config.app_config:
