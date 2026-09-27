@@ -597,10 +597,12 @@ run_partition_decide() {
   local MIN_INSTALL_B=$((32 * gib))    # Minimum total Omarchy allocation
 
   # parted reports a free region's end as its last byte, and takes a
-  # partition's end the same way. Root ends on the last byte before the
-  # region's last MiB boundary, so a gap of exactly 32GiB holds 32GiB.
+  # partition's end the same way. The ESP ends on its own last byte, so it is
+  # exactly 2GiB and root starts on the MiB boundary right after it. Root ends
+  # on the last byte before the region's last MiB boundary, so a gap of
+  # exactly 32GiB holds 32GiB.
   EFI_START_B=$(( (FREE_START_B + ALIGN - 1) / ALIGN * ALIGN ))
-  EFI_END_B=$((EFI_START_B + EFI_SIZE_B))
+  EFI_END_B=$((EFI_START_B + EFI_SIZE_B - 1))
   ROOT_START_B=$(( (EFI_END_B + 1 + ALIGN - 1) / ALIGN * ALIGN ))
   ROOT_END_B=$(( (FREE_END_B + 1) / ALIGN * ALIGN - 1 ))
 
