@@ -1,6 +1,6 @@
 """chefs-kitchen: validate, plan and install from install.toml.
 
-  chefs-kitchen validate install.toml             schema and semantic checks, no hardware access
+  chefs-kitchen validate [--config] install.toml  schema and semantic checks, no hardware access
   chefs-kitchen plan --config install.toml [--yes]
                                                   resolve disks and print the wipe summary; touches nothing
   chefs-kitchen install --config install.toml     shows the wipe summary and asks before erasing
@@ -39,6 +39,17 @@ def _load(path: str) -> tuple[InstallConfig, list[Issue]] | None:
     except ConfigError as exc:
         print(f"chefs-kitchen: {exc}")
         return None
+
+
+def _validate_file(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
+    """validate takes install.toml as an argument, or with --config the way
+    plan and install take it. Both at once must name the same file."""
+    file, config = args.file, args.config
+    if file is None and config is None:
+        parser.error("give install.toml, as an argument or with --config")
+    if file is not None and config is not None and Path(file).resolve() != Path(config).resolve():
+        parser.error(f"two files given, {file} and --config {config}; give one")
+    return file if file is not None else config
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
@@ -196,7 +207,8 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
 
     validate = commands.add_parser("validate", help="check install.toml without touching any hardware")
-    validate.add_argument("file")
+    validate.add_argument("file", nargs="?", help="install.toml")
+    validate.add_argument("--config", help="install.toml, as plan and install take it")
     validate.set_defaults(func=cmd_validate)
 
     plan = commands.add_parser("plan", help="resolve install.toml on this machine and show what it would erase")
@@ -213,6 +225,8 @@ def main(argv: list[str] | None = None) -> int:
     install.set_defaults(func=cmd_install)
 
     args = parser.parse_args(argv)
+    if args.command == "validate":
+        args.file = _validate_file(validate, args)
     return args.func(args)
 
 

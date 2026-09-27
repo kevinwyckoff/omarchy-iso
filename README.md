@@ -39,7 +39,7 @@ The shipped ISO installs itself with no keyboard when it finds its configuration
 A drive carrying `install.toml` describes the whole install in one file, and takes precedence over the legacy files below. `chefs-kitchen` checks it, resolves it against the machine, and installs it:
 
 ```bash
-chefs-kitchen validate install.toml                  # schema and semantic checks, no hardware access
+chefs-kitchen validate --config install.toml         # schema and semantic checks, no hardware access
 chefs-kitchen plan --config install.toml --yes       # resolve the disk and print what would be erased; touches nothing
 chefs-kitchen install --config install.toml          # shows the wipe summary and asks before erasing
 chefs-kitchen install --config install.toml --yes    # unattended: what the ISO runs for a cidata drive
