@@ -118,7 +118,7 @@ check "identical models still render differently once the device path is set asi
   "different" "$([[ ${line0#* } != "${line1#* }" ]] && echo different || echo same)"
 check "a virtio disk's PCI vendor ID is not shown as its name" \
   "/dev/vda  40 GiB  empty · VirtIO disk" "$(disk_picker_line /dev/vda)"
-check "a drive below ESP + 32GiB is flagged, and one with nothing notable keeps its count" \
+check "a drive below 32GiB is flagged, and one with nothing notable keeps its count" \
   "/dev/sdc  16 GiB  too small · 1 partition · S/N SMALL0001 · SSD 16GB" "$(disk_picker_line /dev/sdc)"
 check_width "everything but the model fits an 80-column console" 78 \
   "$(for d in $(installable_disks); do line=$(disk_picker_line "$d"); echo "${line% · *}"; done)"
@@ -177,6 +177,24 @@ check_contains "unencrypted free-space ESP mounts at /efi" $'\n      2 GiB      
 check_contains "root fills the free region" $'\n      58 GiB' "$free"
 check_absent "the new ESP doesn't take a kept partition's number" "   1  2 GiB" "$free"
 check_absent "the new root doesn't take a kept partition's number" "   2  58 GiB" "$free"
+
+# The same 32GiB a free-space install needs, the ESP included. Last, since it
+# swaps the fixture.
+echo "==> the full-disk minimum"
+cat >"$WORK/sizes.json" <<'JSON'
+{"blockdevices": [
+  {"name": "vdb", "path": "/dev/vdb", "type": "disk", "size": 34359738368},
+  {"name": "vdc", "path": "/dev/vdc", "type": "disk", "size": 34358689792},
+  {"name": "vdd", "path": "/dev/vdd", "type": "disk", "size": 35433480192}
+]}
+JSON
+DISK_INSPECT_LSBLK_JSON="$WORK/sizes.json" disk_inventory_refresh
+disk_is_too_small /dev/vdb && small=yes || small=no
+check "a 32GiB disk is big enough" "no" "$small"
+disk_is_too_small /dev/vdc && small=yes || small=no
+check "one 1MiB smaller is too small" "yes" "$small"
+disk_is_too_small /dev/vdd && small=yes || small=no
+check "a 33GiB disk is big enough" "no" "$small"
 
 echo
 if (( failures > 0 )); then

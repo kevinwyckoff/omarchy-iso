@@ -14,9 +14,9 @@
 # set DISK_INSPECT_PROBE=0 (or pre-fill disk_contents) to skip mounting.
 
 DISK_INSPECT_ESP_B=$((2 * 1024 * 1024 * 1024))
-DISK_INSPECT_MIN_ROOT_B=$((32 * 1024 * 1024 * 1024))
-# Matches the free-space minimum: a 2GiB ESP plus 32GiB for Omarchy.
-DISK_INSPECT_MIN_FULL_DISK_B=$((DISK_INSPECT_ESP_B + DISK_INSPECT_MIN_ROOT_B))
+# A full-disk install needs what a free-space one does: 32GiB, the 2GiB ESP
+# included.
+DISK_INSPECT_MIN_FULL_DISK_B=$((32 * 1024 * 1024 * 1024))
 
 DISK_INSPECT_PROBE="${DISK_INSPECT_PROBE:-1}"
 DISK_INSPECT_PROBE_TIMEOUT="${DISK_INSPECT_PROBE_TIMEOUT:-10}"
