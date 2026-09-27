@@ -549,7 +549,9 @@ run_partition_decide() {
   sleep 1
 
   # An unlabeled disk has no partition table for parted to scan, so we
-  # synthesize a whole-disk free region and mklabel gpt before mkpart.
+  # synthesize a whole-disk free region and mklabel gpt before mkpart. Like
+  # parted's, the region ends on its last byte; the disk's last MiB is left
+  # for the backup GPT.
   local FREE_SPACE_INFO pt_type disk_size_b
   needs_mklabel=false
   pt_type=$(lsblk -dno PTTYPE "$disk" 2>/dev/null)
@@ -558,8 +560,8 @@ run_partition_decide() {
     if [[ -n "$disk_size_b" && "$disk_size_b" -gt 0 ]]; then
       local _mib=$((1024 * 1024))
       local _start=$_mib
-      local _end=$(( (disk_size_b - _mib) / _mib * _mib ))
-      FREE_SPACE_INFO="$_start $_end $((_end - _start))"
+      local _end=$(( (disk_size_b - _mib) / _mib * _mib - 1 ))
+      FREE_SPACE_INFO="$_start $_end $((_end - _start + 1))"
       needs_mklabel=true
     fi
   else
@@ -594,17 +596,20 @@ run_partition_decide() {
   local EFI_SIZE_B=$((2 * gib))
   local MIN_INSTALL_B=$((32 * gib))    # Minimum total Omarchy allocation
 
+  # parted reports a free region's end as its last byte, and takes a
+  # partition's end the same way. Root ends on the last byte before the
+  # region's last MiB boundary, so a gap of exactly 32GiB holds 32GiB.
   EFI_START_B=$(( (FREE_START_B + ALIGN - 1) / ALIGN * ALIGN ))
   EFI_END_B=$((EFI_START_B + EFI_SIZE_B))
   ROOT_START_B=$(( (EFI_END_B + 1 + ALIGN - 1) / ALIGN * ALIGN ))
-  ROOT_END_B=$((FREE_END_B / ALIGN * ALIGN))
+  ROOT_END_B=$(( (FREE_END_B + 1) / ALIGN * ALIGN - 1 ))
 
   if (( ROOT_END_B <= ROOT_START_B )); then
     not_enough_space "$FREE_SIZE_B"
     return $?
   fi
 
-  local INSTALL_MAX_B=$((ROOT_END_B - EFI_START_B))
+  local INSTALL_MAX_B=$((ROOT_END_B + 1 - EFI_START_B))
 
   if (( INSTALL_MAX_B < MIN_INSTALL_B )); then
     not_enough_space "$INSTALL_MAX_B"
