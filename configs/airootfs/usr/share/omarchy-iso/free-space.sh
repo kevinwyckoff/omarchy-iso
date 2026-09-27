@@ -18,9 +18,9 @@ FREE_SPACE_MIN_INSTALL_B=$((32 * 1024 * 1024 * 1024))
 #
 # Prints "<needs_mklabel> <efi_start> <efi_end> <root_start> <root_end>" in
 # bytes for the largest free region, aligned to 1MiB. When there is no region
-# big enough for an ESP plus 32GiB, prints the usable bytes it did find and
-# returns 1. An unlabeled disk has no partition table for parted to scan, so
-# its whole surface is the region and needs_mklabel is true.
+# big enough for 32GiB, the ESP included, prints the usable bytes it did find
+# and returns 1. An unlabeled disk has no partition table for parted to scan,
+# so its whole surface is the region and needs_mklabel is true.
 free_space_region() {
   local disk="$1" pt_type size free needs_mklabel=false
   local free_start free_end free_size efi_start efi_end root_start root_end install_max
