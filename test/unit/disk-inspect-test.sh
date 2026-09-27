@@ -184,15 +184,23 @@ check_contains "a blank drive says so" $'What dies:\n   Nothing. The disk is bla
 
 echo "==> free-space summary"
 gib=$((1024 * 1024 * 1024))
-free=$(render_wipe_summary /dev/nvme1n1 free_space false 80 $((400 * gib)) $((402 * gib)) $((402 * gib + 1048576)) $((460 * gib)))
+# Laid out as free_space_region prints it, each end the partition's last byte.
+free=$(render_wipe_summary /dev/nvme1n1 free_space false 80 $((400 * gib)) $((402 * gib - 1)) $((402 * gib)) $((460 * gib - 1)))
 check_contains "headline" "OMARCHY WILL USE FREE SPACE ON THIS DISK" "$free"
 check_contains "nothing is erased" "Nothing is erased." "$free"
+check_contains "the free space used is the ESP and root" "Free space used: 60 GiB" "$free"
 check_absent "no 'What dies' in free-space mode" "What dies" "$free"
 check_contains "existing partitions are listed as kept" "Kept on this disk:" "$free"
 check_contains "unencrypted free-space ESP mounts at /efi" $'\n      2 GiB      vfat            /efi' "$free"
 check_contains "root fills the free region" $'\n      58 GiB' "$free"
 check_absent "the new ESP doesn't take a kept partition's number" "   1  2 GiB" "$free"
 check_absent "the new root doesn't take a kept partition's number" "   2  58 GiB" "$free"
+
+# A size counts its partition's last byte. At the summary's precision that
+# shows only on a tie: 57.75GiB rounds to 57.8GiB, and a byte less to 57.7GiB.
+tie=$(render_wipe_summary /dev/nvme1n1 free_space false 80 $((400 * gib)) $((402 * gib - 1)) $((402 * gib)) $((459 * gib + 3 * gib / 4 - 1)))
+check_contains "root counts its last byte" $'\n      57.8 GiB' "$tie"
+check_contains "the free space used counts root's last byte" "Free space used: 59.8 GiB" "$tie"
 
 # The same 32GiB a free-space install needs, the ESP included. Last, since it
 # swaps the fixture.

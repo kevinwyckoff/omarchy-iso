@@ -559,7 +559,7 @@ class PlanTest(unittest.TestCase):
         parsed, issues = parse(data)
         self.assertTrue(any("different disk" in e for e in errors(issues)))
 
-    def free_space(self, region=(False, 400 * 2**30, 402 * 2**30, 402 * 2**30 + 2**20, 460 * 2**30), bitlocker=()):
+    def free_space(self, region=(False, 400 * 2**30, 402 * 2**30 - 1, 402 * 2**30, 460 * 2**30 - 1), bitlocker=()):
         data = self.unattended_config()
         data["disk"]["mode"] = "free-space"
         with mock.patch.object(plan.helpers, "free_space_region", return_value=region), \

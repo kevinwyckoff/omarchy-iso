@@ -7,6 +7,12 @@
 # the first byte after the region lost the region's last MiB. A gap of exactly
 # 32GiB, what shrinking Windows by 32768MB leaves, was refused.
 #
+# It also pins the layout inside the region. parted takes a partition's end as
+# its last byte too, so an ESP ended on the first byte after its 2GiB came out
+# a sector over, and root, aligned up past that sector, started a MiB late and
+# came out a MiB short. The ESP must be exactly 2GiB, root must start on the
+# byte after it, and root must fill the rest of the region.
+#
 # Runs free-space.sh's free_space_region, which both the wizard and
 # chefs-kitchen use, against real parted on sparse image files, then creates
 # the ESP and root it laid out, to show parted takes them.
@@ -61,6 +67,23 @@ part_bounds() {
   parted -ms "$disk" unit B print | awk -F: -v n="$1" '$1 == n { gsub(/B/, ""); print $2, $3 }'
 }
 
+# A partition's size in 512-byte sectors, as parted reports it.
+part_sectors() {
+  parted -ms "$disk" unit s print | awk -F: -v n="$1" '$1 == n { gsub(/s/, "", $4); print $4 }'
+}
+
+# The ESP is exactly 2GiB, root starts on the byte after it, and root is
+# <root_bytes>, ending on a MiB boundary.
+check_layout() {
+  local esp="$1" root="$2" root_bytes="$3" esp_last root_first root_last
+  read -r _ esp_last <<<"$(part_bounds "$esp")"
+  read -r root_first root_last <<<"$(part_bounds "$root")"
+  check "the ESP is exactly 2GiB" "$((2 * GIB / 512)) sectors" "$(part_sectors "$esp") sectors"
+  check "root starts on the byte after the ESP" "$((esp_last + 1))" "$root_first"
+  check "root ends on a MiB boundary" "0" "$(((root_last + 1) % MIB))"
+  check "root is $((root_bytes / MIB))MiB" "$root_bytes" "$((root_last + 1 - root_first))"
+}
+
 decide() {
   region=$(free_space_region "$disk") && refused_with="" || refused_with=${region:-"(no size)"}
   read -r needs_mklabel efi_start efi_end root_start root_end <<<"$region"
@@ -101,6 +124,7 @@ if create_layout; then
   check "the ESP is the partition parted added" "$efi_start" "$(part_bounds 5 | cut -d' ' -f1)"
   check "root fills the gap to its last byte" "$root_start $gap_end" "$(part_bounds 6)"
   check "WinRE is untouched" "$winre_before" "$(part_bounds 4)"
+  check_layout 5 6 $((30 * GIB))
 else
   check "parted creates the ESP and root" "created" "refused"
 fi
@@ -121,6 +145,7 @@ check "accepted" "" "$refused_with"
 check "a new GPT" "true" "$needs_mklabel"
 if create_layout; then
   check "root ends 1MiB before the end of the disk" "$((32 * GIB + MIB - 1))" "$(part_bounds 2 | cut -d' ' -f2)"
+  check_layout 1 2 $((30 * GIB))
 else
   check "parted creates the ESP and root" "created" "refused"
 fi

@@ -81,14 +81,14 @@ echo "==> numbering on a disk with holes"
 build_holey_disk
 check "existing numbers" "1 4" "$(partition_numbers "$IMG" | sort | tr '\n' ' ' | sed 's/ $//')"
 
-create_partition "$IMG" "$((1000 * MIB))" "$((1200 * MIB))" fat32 OMARCHY_EFI
+# Each ends on its last byte and root starts on the byte after the ESP, the
+# way a free-space install lays them out.
+create_partition "$IMG" "$((1000 * MIB))" "$((1200 * MIB - 1))" fat32 OMARCHY_EFI
 check "create_partition succeeded (esp)" "0" "$?"
 esp_num="$created_partition_number"
 check "esp took the lowest free slot" "2" "$esp_num"
 
-# Starts a MiB past the ESP, the way run_partition_decide aligns ROOT_START_B
-# up from EFI_END_B + 1.
-create_partition "$IMG" "$((1201 * MIB))" "$((2000 * MIB))" btrfs OMARCHY_ROOT
+create_partition "$IMG" "$((1200 * MIB))" "$((2000 * MIB - 1))" btrfs OMARCHY_ROOT
 check "create_partition succeeded (root)" "0" "$?"
 root_num="$created_partition_number"
 check "root took the next free slot" "3" "$root_num"
@@ -100,7 +100,7 @@ check "root is not the predicted number" "not-6" "$([[ $root_num == 6 ]] && echo
 
 check "both creations tracked for rollback" "2 3" "${created_parts[*]}"
 check_size "esp size" "$((200 * MIB))" "$(partition_size_bytes "$IMG" "$esp_num")"
-check_size "root size" "$((799 * MIB))" "$(partition_size_bytes "$IMG" "$root_num")"
+check_size "root size" "$((800 * MIB))" "$(partition_size_bytes "$IMG" "$root_num")"
 
 echo "==> rollback reclaims only what this run created"
 rollback_created_parts "$IMG"
