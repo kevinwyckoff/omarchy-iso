@@ -898,7 +898,7 @@ open_partition_tool() {
   step "Partition tool for $disk"
   gum style "Create unallocated free space for Omarchy, then write changes and quit."
   gum style --foreground 8 "Do not create an Omarchy partition here — leave the target area as Free space."
-  gum style --foreground 8 "Tip: free-space install needs at least 32GB unallocated, plus 2GB more if no ESP already exists."
+  gum style --foreground 8 "Tip: free-space install needs 32GB+ unallocated, the 2GB EFI partition included."
   echo
   gum confirm --affirmative "Open cfdisk" --negative "Back" "Open partition tool for $disk?" || return 0
 
