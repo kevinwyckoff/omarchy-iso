@@ -159,7 +159,8 @@ def make_plan(config: InstallConfig, unattended: bool, width: int = 100) -> Plan
     size = int(resolve.device(devices, disk).get("size") or 0)
     minimum = helpers.min_full_disk_bytes()
     if size < minimum:
-        refuse("disk.target", f"{disk} is {size // 2**30} GiB; Omarchy needs at least {minimum // 2**30} GiB")
+        refuse("disk.target", f"{disk} is {size // 2**30} GiB; Omarchy needs at least {minimum // 2**30} GiB, "
+                              "its own 2 GiB ESP included")
 
     if config.target.kind == "path" and not _is_virtual_machine():
         plan.issues.append(Issue("disk.target", f"{{ path = ... }} can name a different disk after a reboot or re-cabling; on real hardware prefer serial, by_id or wwn", "warning"))

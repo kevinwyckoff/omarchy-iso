@@ -426,7 +426,7 @@ class PlanTest(unittest.TestCase):
              mock.patch.object(plan.helpers, "install_medium", return_value=medium), \
              mock.patch.object(plan.helpers, "is_cidata", return_value=False), \
              mock.patch.object(plan.helpers, "installable_disks", return_value=["/dev/sda"]), \
-             mock.patch.object(plan.helpers, "min_full_disk_bytes", return_value=34 * 2**30), \
+             mock.patch.object(plan.helpers, "min_full_disk_bytes", return_value=32 * 2**30), \
              mock.patch.object(plan.helpers, "has_signatures", return_value=signatures), \
              mock.patch.object(plan.helpers, "wipe_summary", return_value="THIS WILL ERASE A DISK\n"), \
              mock.patch.object(plan.helpers, "busy_partitions", return_value=[]), \
@@ -568,6 +568,18 @@ class PlanTest(unittest.TestCase):
                 if expected:
                     self.assertIn("system.keyboard: unknown keymap 'german'", out.getvalue())
                     self.assertIn("Not installing.", out.getvalue())
+
+    def test_the_full_disk_minimum_is_the_free_space_one(self):
+        # 32 GiB for everything Omarchy creates, the ESP included, which is
+        # what a free-space install needs and what the wizard's picker asks.
+        config, _ = parse(self.unattended_config(on_existing_data="wipe"))
+        with self.on_machine(size=32 * 2**30):
+            result = plan.make_plan(config, unattended=True)
+        self.assertTrue(result.ok, [str(i) for i in result.issues])
+        with self.on_machine(size=32 * 2**30 - 2**20):
+            result = plan.make_plan(config, unattended=True)
+        self.assertIn("disk.target: /dev/sda is 31 GiB; Omarchy needs at least 32 GiB, its own 2 GiB ESP included",
+                      str(result.errors[0]))
 
     def test_knobs_this_iso_can_not_install_yet(self):
         for extra in ({"swap": {"strategy": "zram"}}, {"desktop": {"theme": "nord"}}):
