@@ -504,7 +504,7 @@ _disk_render_untouched() {
 # probes run again in the subshell and their answers are thrown away.
 render_wipe_summary() {
   local disk="$1" mode="$2" encrypt="$3" width="${4:-80}"
-  local title serial by_id tran part size fs label esp_b root_b ram root_desc esp_mount table=()
+  local title serial by_id tran part size fs label esp_b root_b ram root_desc esp_mount esp_num root_num table=()
 
   disk_probe "$disk"
 
@@ -581,10 +581,18 @@ render_wipe_summary() {
     [[ $mode == "free_space" ]] && esp_mount="/efi"
   fi
 
+  # parted puts a free-space install's partitions in the lowest free GPT
+  # slots, which need not be 1 and 2: those usually belong to partitions
+  # listed as kept above. Leave the numbers blank rather than predict them;
+  # the code that creates the partitions doesn't predict them either, but
+  # reads back what parted assigned.
+  esp_num=1 root_num=2
+  [[ $mode == "free_space" ]] && esp_num="" root_num=""
+
   echo
   echo "What gets created:"
-  _disk_created_row "1" "$(human_size "$esp_b")" "vfat" "$esp_mount"
-  _disk_created_row "2" "$(human_size "$root_b")" "$root_desc" "/  (@, @home, @log, @pkg)"
+  _disk_created_row "$esp_num" "$(human_size "$esp_b")" "vfat" "$esp_mount"
+  _disk_created_row "$root_num" "$(human_size "$root_b")" "$root_desc" "/  (@, @home, @log, @pkg)"
   ram=$(_disk_ram_bytes)
   if [[ -n $ram ]]; then
     _disk_truncate "      with zram and a $(human_size "$ram") hibernation swapfile" "$width"
