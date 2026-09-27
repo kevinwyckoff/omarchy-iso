@@ -17,6 +17,7 @@ import json
 import os
 import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from . import helpers, resolve
 from .schema import InstallConfig, Issue
@@ -76,6 +77,40 @@ def _is_virtual_machine() -> bool:
     return result.returncode == 0
 
 
+# The directories localectl list-keymaps reads.
+KEYMAP_DIRS = (Path("/usr/share/keymaps"), Path("/usr/share/kbd/keymaps"), Path("/usr/lib/kbd/keymaps"))
+
+
+def console_keymaps() -> set[str] | None:
+    """What localectl list-keymaps lists on this machine: <name>.map or
+    <name>.map.gz anywhere under KEYMAP_DIRS. None if there are none."""
+    keymaps = {
+        path.name.removesuffix(".gz").removesuffix(".map")
+        for root in KEYMAP_DIRS
+        if root.is_dir()
+        for path in root.rglob("*.map*")
+        if path.name.endswith((".map", ".map.gz"))
+    }
+    return keymaps or None
+
+
+def _check_keyboard(plan: Plan, config: InstallConfig) -> None:
+    # The install's keyboard step looks the keymap up in localectl list-keymaps
+    # on this same live system, and only logs one it doesn't find: the machine
+    # comes up with a US console and a US desktop, with nobody at an unattended
+    # install to see the line. Check the name here, in its case although that
+    # step ignores case: loadkeys and systemd's XKB mapping look it up exactly,
+    # so "DE-LATIN1" would end the same way.
+    keymaps = console_keymaps()
+    if keymaps is None:
+        plan.issues.append(Issue("system.keyboard", "can't be checked here: this machine has no console keymaps", "warning"))
+    elif config.keyboard not in keymaps:
+        plan.issues.append(Issue(
+            "system.keyboard",
+            f'unknown keymap {config.keyboard!r} (use a name from localectl list-keymaps, like "de-latin1")',
+        ))
+
+
 def make_plan(config: InstallConfig, unattended: bool, width: int = 100) -> Plan:
     plan = Plan(config, unattended)
 
@@ -94,6 +129,8 @@ def make_plan(config: InstallConfig, unattended: bool, width: int = 100) -> Plan
         refuse("desktop.agent", _NOT_YET)
     if config.extra_packages:
         refuse("packages.extra", _NOT_YET)
+
+    _check_keyboard(plan, config)
 
     if unattended and config.needs_passphrase_prompt():
         refuse("encryption.passphrase", "needs to be typed at install time, which --yes can't do")
