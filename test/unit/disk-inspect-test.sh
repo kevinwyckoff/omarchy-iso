@@ -173,8 +173,10 @@ check_contains "headline" "OMARCHY WILL USE FREE SPACE ON THIS DISK" "$free"
 check_contains "nothing is erased" "Nothing is erased." "$free"
 check_absent "no 'What dies' in free-space mode" "What dies" "$free"
 check_contains "existing partitions are listed as kept" "Kept on this disk:" "$free"
-check_contains "unencrypted free-space ESP mounts at /efi" "   1  2 GiB      vfat            /efi" "$free"
-check_contains "root fills the free region" "   2  58 GiB" "$free"
+check_contains "unencrypted free-space ESP mounts at /efi" $'\n      2 GiB      vfat            /efi' "$free"
+check_contains "root fills the free region" $'\n      58 GiB' "$free"
+check_absent "the new ESP doesn't take a kept partition's number" "   1  2 GiB" "$free"
+check_absent "the new root doesn't take a kept partition's number" "   2  58 GiB" "$free"
 
 echo
 if (( failures > 0 )); then
