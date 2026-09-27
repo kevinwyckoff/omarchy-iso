@@ -657,5 +657,16 @@ class PlanTest(unittest.TestCase):
             self.assertIn("not supported by this ISO yet", str(self.make(data).errors[0]))
 
 
+class ConfirmTest(unittest.TestCase):
+    """Interactive installs confirm each disk before anything is written to it."""
+
+    def test_a_blank_disk_is_offered_for_use_not_erasure(self):
+        blank = plan.DiskPlan("/dev/sdb", "sha256:" + "0" * 64, has_signatures=False)
+        with mock.patch.object(cli, "_gum", return_value=mock.Mock(returncode=0)) as gum:
+            self.assertTrue(cli._confirm_disk(blank))
+        self.assertEqual(gum.call_args.args, ("confirm", "--affirmative", "Yes, use it", "--negative", "No",
+                                              "/dev/sdb is blank. Use it?"))
+
+
 if __name__ == "__main__":
     unittest.main()

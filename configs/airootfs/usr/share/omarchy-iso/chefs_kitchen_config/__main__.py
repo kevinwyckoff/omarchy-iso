@@ -114,7 +114,7 @@ def _confirm_disk(target: planning.DiskPlan) -> bool:
     disk = target.path
     name = os.path.basename(disk)
     if not target.has_signatures:
-        return _gum("confirm", "--affirmative", "Yes, erase it", "--negative", "No",
+        return _gum("confirm", "--affirmative", "Yes, use it", "--negative", "No",
                     f"{disk} is blank. Use it?").returncode == 0
     while True:
         answer = _gum("input", "--placeholder", "", "--prompt", "> ",
