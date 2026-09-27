@@ -11,12 +11,13 @@ also run end to end on an ISO.
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import textwrap
 import tomllib
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -46,6 +47,38 @@ def errors(issues):
 
 def warnings(issues):
     return [str(i) for i in issues if i.severity == "warning"]
+
+
+def kbd_tree(directory: Path) -> Path:
+    """Keymaps as kbd lays them out: per-layout directories, some of them links."""
+    root = directory / "keymaps"
+    (root / "i386/qwerty").mkdir(parents=True)
+    (root / "i386/qwertz").mkdir(parents=True)
+    (root / "i386/qwerty/us.map.gz").write_bytes(b"")
+    (root / "i386/qwerty/defkeymap.map").write_text("")
+    (root / "i386/qwertz/de-latin1.map.gz").write_bytes(b"")
+    (root / "i386/qwertz/de.map.gz").symlink_to("de-latin1.map.gz")
+    return root
+
+
+# The wizard's keyboard picker lives in the Omarchy runtime's setup-form.sh;
+# read it from wherever this checkout can see one, as test_keyboard.py does.
+SETUP_FORM_CANDIDATES = (
+    Path("/omarchy-source/install/provisioning/setup-form.sh"),
+    Path(__file__).resolve().parents[3] / "omarchy/install/provisioning/setup-form.sh",
+    Path("/usr/share/omarchy/install/provisioning/setup-form.sh"),
+)
+
+
+def wizard_keymaps() -> list[str] | None:
+    for candidate in SETUP_FORM_CANDIDATES:
+        if candidate.is_file():
+            block = re.search(r"OMARCHY_KEYBOARD_LAYOUTS=\$'(.*?)'\n", candidate.read_text(), re.DOTALL)
+            assert block, f"no layout list in {candidate}"
+            # The wizard takes a row's second '|' field as the keymap (the
+            # form's awk prints $2), whatever fields follow it.
+            return [line.split("|")[1] for line in block.group(1).splitlines()]
+    return None
 
 
 class SchemaTest(unittest.TestCase):
@@ -150,6 +183,15 @@ class SchemaTest(unittest.TestCase):
         _, issues = parse(minimal(system={"timezone": "Mars/Olympus_Mons"}))
         self.assertTrue(any("unknown timezone" in e for e in errors(issues)))
 
+    def test_a_keymap_name_is_only_checked_for_its_shape(self):
+        # Whether it exists is plan's check (PlanTest): kbd's keymaps differ
+        # between distributions, and validate runs anywhere.
+        for keyboard in ("colemak", "german"):
+            with self.subTest(keyboard=keyboard):
+                self.assertEqual(errors(parse(minimal(system={"keyboard": keyboard}))[1]), [])
+        issues = errors(parse(minimal(system={"keyboard": "de latin1"}))[1])
+        self.assertTrue(any("system.keyboard: must be a console keymap name" in e for e in issues), issues)
+
     def test_disk_selectors(self):
         for target in ({"serial": "x"}, {"by_id": "nvme-x"}, {"wwn": "eui.1"}, {"path": "/dev/vda"}):
             self.assertEqual(errors(parse(minimal(disk={"target": target}))[1]), [], target)
@@ -212,6 +254,14 @@ class ValidateCommandTest(unittest.TestCase):
         status, output = self.run_validate(self.BASE + '\n[encryption]\npassphrase = "hunter2"\n')
         self.assertEqual(status, 1)
         self.assertIn("encryption.passphrase: a plaintext secret is not allowed", output)
+
+    def test_a_keymap_is_not_looked_up(self):
+        # Fedora's kbd has no "colemak", which the wizard offers; a made-up
+        # name is plan's to refuse, on the machine that installs.
+        for keyboard in ("colemak", "german"):
+            with self.subTest(keyboard=keyboard):
+                status, output = self.run_validate(self.BASE + f'\n[system]\nkeyboard = "{keyboard}"\n')
+                self.assertEqual(status, 0, output)
 
     def test_not_toml(self):
         status, output = self.run_validate("schema = = 1")
@@ -419,6 +469,105 @@ class PlanTest(unittest.TestCase):
     def test_the_install_medium_is_refused(self):
         result = self.make(self.unattended_config(), medium="/dev/sda")
         self.assertIn("install medium", str(result.errors[0]))
+
+    def keyboard_config(self, keyboard):
+        data = self.unattended_config(on_existing_data="wipe")
+        data["system"]["keyboard"] = keyboard
+        return data
+
+    def with_keymaps(self, keyboard, *keymap_dirs):
+        with mock.patch.object(plan, "KEYMAP_DIRS", keymap_dirs):
+            return self.make(self.keyboard_config(keyboard))
+
+    def test_an_unknown_keymap_refuses(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = kbd_tree(Path(directory))
+            for keyboard in ("us", "defkeymap", "de-latin1", "de"):
+                with self.subTest(keyboard=keyboard):
+                    result = self.with_keymaps(keyboard, Path(directory) / "missing", root)
+                    self.assertTrue(result.ok, [str(i) for i in result.issues])
+            # loadkeys would find neither a made-up name nor one in the wrong case.
+            for keyboard in ("german", "DE-LATIN1", "us.map"):
+                with self.subTest(keyboard=keyboard):
+                    result = self.with_keymaps(keyboard, Path(directory) / "missing", root)
+                    self.assertIn(f"system.keyboard: unknown keymap {keyboard!r}", str(result.errors[0]))
+
+    def test_without_keymaps_the_keyboard_is_only_warned_about(self):
+        # As with a theme on a machine that isn't the ISO: plan can't check it,
+        # so it says so rather than refuse. The ISO always has kbd's keymaps.
+        with tempfile.TemporaryDirectory() as directory:
+            # Debian's console-data keymaps are .kmap.gz, which localectl
+            # (systemd 262, the ISO's) doesn't list.
+            (Path(directory) / "i386").mkdir()
+            (Path(directory) / "i386/us.kmap.gz").write_bytes(b"")
+            for dirs in ((Path(directory) / "missing",), (Path(directory),)):
+                with self.subTest(dirs=dirs):
+                    result = self.with_keymaps("german", *dirs)
+                    self.assertTrue(result.ok, [str(i) for i in result.issues])
+                    self.assertTrue(any("system.keyboard: can't be checked here" in w for w in warnings(result.issues)))
+
+    def test_every_keymap_the_wizard_offers_is_known_to_the_iso(self):
+        offered = wizard_keymaps()
+        if offered is None:
+            self.skipTest("no Omarchy runtime checkout to read the wizard's keymaps from")
+        if not Path("/etc/arch-release").exists() or plan.console_keymaps() is None:
+            self.skipTest("needs Arch's kbd keymaps, the ones the ISO has")
+        for keyboard in offered:
+            with self.subTest(keyboard=keyboard):
+                result = self.make(self.keyboard_config(keyboard))
+                self.assertTrue(result.ok, [str(i) for i in result.issues])
+        # The same check, against the same keymaps, does refuse.
+        self.assertIn("unknown keymap 'german'", str(self.make(self.keyboard_config("german")).errors[0]))
+
+    def on_machine(self, size=42949672960):
+        """make()'s machine as a context, for tests that run more than
+        make_plan: one disk of <size>, and the real full-disk minimum."""
+        stack = ExitStack()
+        devices = [{"path": "/dev/sda", "type": "disk", "size": size, "serial": "S69ENX0T812345"}]
+        for target, name, value in (
+            (plan.resolve, "inventory", devices),
+            (plan.helpers, "install_medium", "/dev/sdz"),
+            (plan.helpers, "is_cidata", False),
+            (plan.helpers, "installable_disks", ["/dev/sda"]),
+            (plan.helpers, "has_signatures", True),
+            (plan.helpers, "wipe_summary", "THIS WILL ERASE A DISK\n"),
+            (plan.helpers, "busy_partitions", []),
+            (plan, "_is_virtual_machine", True),
+        ):
+            stack.enter_context(mock.patch.object(target, name, return_value=value))
+        return stack
+
+    def test_install_refuses_an_unknown_keymap_before_writing_anything(self):
+        # install plans first. Only a clean plan gets the installer's inputs
+        # written and the install launched, and nothing is erased before that.
+        for keyboard, expected in (("german", 1), ("de-latin1", 0)):
+            with self.subTest(keyboard=keyboard), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "install.toml"
+                path.write_text(textwrap.dedent(f"""
+                    schema = 1
+                    [system]
+                    keyboard = "{keyboard}"
+                    [[users]]
+                    name = "kevin"
+                    password_hash = "{HASH}"
+                    [disk]
+                    target = {{ serial = "S69ENX0T812345" }}
+                    on_existing_data = "wipe"
+                    [encryption]
+                    passphrase = {{ insecure_plaintext = "hunter2" }}
+                """))
+                out = io.StringIO()
+                with self.on_machine() as stack:
+                    stack.enter_context(mock.patch.object(cli.compile_archinstall, "detect_kernel", return_value="linux"))
+                    stack.enter_context(mock.patch.object(plan, "KEYMAP_DIRS", (kbd_tree(Path(tmp)),)))
+                    write_inputs = stack.enter_context(mock.patch.object(cli.compile_archinstall, "write_inputs"))
+                    stack.enter_context(redirect_stdout(out))
+                    status = cli.main(["install", "--config", str(path), "--yes", "--no-launch", "--out", tmp])
+                self.assertEqual(status, expected, out.getvalue())
+                self.assertEqual(write_inputs.called, expected == 0)
+                if expected:
+                    self.assertIn("system.keyboard: unknown keymap 'german'", out.getvalue())
+                    self.assertIn("Not installing.", out.getvalue())
 
     def test_knobs_this_iso_can_not_install_yet(self):
         for extra in ({"swap": {"strategy": "zram"}}, {"desktop": {"theme": "nord"}}):

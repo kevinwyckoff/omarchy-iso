@@ -316,6 +316,9 @@ class _Validator:
             self.error("system.timezone", f"unknown timezone {config.timezone!r} (use a name like \"America/Toronto\")")
 
         config.keyboard = self.string(system, "keyboard", "system.keyboard", DEFAULT_KEYBOARD)
+        # Only the name's shape: whether the keymap exists is plan's check,
+        # because kbd's keymaps differ between distributions (Fedora's has no
+        # "colemak", which the wizard offers) and validate runs anywhere.
         if not re.match(r"^[A-Za-z0-9_.-]+$", config.keyboard):
             self.error("system.keyboard", "must be a console keymap name like \"us\" or \"de-latin1\"")
 
