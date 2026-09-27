@@ -54,6 +54,13 @@ class ConfigureHibernationTest(unittest.TestCase):
         self.configure("none").assert_not_called()
         self.assertIn("zram-size = 0", self.dropin().read_text())
 
+    def test_the_log_says_what_each_strategy_leaves(self):
+        for swap, line in (("zram", "› swap.strategy = zram: zram swap, no hibernation swapfile"),
+                           ("none", "› swap.strategy = none: zram turned off, no hibernation swapfile")):
+            with self.subTest(swap=swap), mock.patch.object(phases_impl, "info") as info:
+                self.configure(swap)
+                info.assert_called_once_with(line)
+
 
 if __name__ == "__main__":
     unittest.main()
